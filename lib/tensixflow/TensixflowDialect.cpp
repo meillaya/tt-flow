@@ -8,6 +8,7 @@
 #include "tensixflow/TensixflowDialect.h"
 #include "tensixflow/TensixflowAttrs.h"
 #include "tensixflow/TensixflowOps.h"
+#include "tensixflow/TensixflowSchedule.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -233,6 +234,15 @@ void TensixflowDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
 #include "tensixflow/TensixflowOps.cpp.inc"
+      >();
+#undef GET_OP_LIST
+  // Tile-level schedule IR ops (todo 31): the tensixflow.sched.* set, the
+  // codegen<->simulator contract (draft D14). Same dialect, registered alongside
+  // the tensor ops; their GET_OP_CLASSES definitions live in
+  // TensixflowScheduleOps.cpp (the single TU with the complete op storage).
+  addOperations<
+#define GET_OP_LIST
+#include "tensixflow/TensixflowSchedule.cpp.inc"
       >();
   addAttributes<TensixflowTileLayoutAttr, TensixflowScheduleAttr>();
 }

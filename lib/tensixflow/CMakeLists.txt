@@ -1,6 +1,7 @@
 add_mlir_dialect_library(MLIRTensixflow
   TensixflowDialect.cpp
   TensixflowOps.cpp
+  TensixflowScheduleOps.cpp
   TensixflowPasses.cpp
   InferTileLayoutPass.cpp
   FuseRmsnormMatmulPass.cpp
@@ -12,6 +13,7 @@ add_mlir_dialect_library(MLIRTensixflow
 
   DEPENDS
   MLIRTensixflowOpsIncGen
+  MLIRTensixflowScheduleIncGen
   MLIRTensixflowAttrsIncGen
   MLIRTensixflowPassesIncGen
 
