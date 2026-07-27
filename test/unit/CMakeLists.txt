@@ -32,3 +32,15 @@ target_link_libraries(SchedulerModelTest PRIVATE
 )
 
 add_test(NAME scheduler_model COMMAND SchedulerModelTest)
+
+# Core-grid planner test (todo 26). Links the scheduler lib (which carries the
+# shared L1-budget constants + GridPlanner and reuses the schema lib PUBLIC).
+add_executable(GridPlannerTest GridPlannerTest.cpp)
+target_link_libraries(GridPlannerTest PRIVATE
+  MLIRTensixflowScheduler
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME grid_planner COMMAND GridPlannerTest)
