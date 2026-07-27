@@ -1,0 +1,10 @@
+# Spike / scratch artifacts — never committed
+_spike/
+
+# Build outputs
+build/
+result
+*.o
+
+# devenv runtime state
+.devenv*
