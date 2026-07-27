@@ -8,8 +8,11 @@
 #include "tensixflow/TensixflowOps.h"
 #include "tensixflow/TensixflowDialect.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
 
 using namespace mlir;
 using namespace mlir::tensixflow;
@@ -53,6 +56,75 @@ ParseResult TensixflowConstantOp::parse(OpAsmParser &parser,
 void TensixflowConstantOp::print(OpAsmPrinter &p) {
   p << ' ' << getValue();
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"value"});
+}
+
+//===----------------------------------------------------------------------===//
+// TensixflowMatmulOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult TensixflowMatmulOp::inferReturnTypeComponents(
+    MLIRContext *context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes,
+    OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) {
+  ShapeAdaptor lhsShape = operands.getShape(0);
+  ShapeAdaptor rhsShape = operands.getShape(1);
+
+  if (!lhsShape.hasRank() || !rhsShape.hasRank())
+    return emitOptionalError(location,
+                             "expected ranked tensors for matmul operands");
+
+  int64_t lhsRank = lhsShape.getRank();
+  int64_t rhsRank = rhsShape.getRank();
+  if (lhsRank < 2)
+    return emitOptionalError(location, "expected lhs to have rank >= 2, got ",
+                             lhsRank);
+  if (rhsRank < 2)
+    return emitOptionalError(location, "expected rhs to have rank >= 2, got ",
+                             rhsRank);
+
+  if (lhsShape.getElementType() != rhsShape.getElementType())
+    return emitOptionalError(
+        location, "expected lhs and rhs element types to match, got ",
+        lhsShape.getElementType(), " and ", rhsShape.getElementType());
+
+  // Result shape = lhs batch/M dims (all but the contracting K) followed by
+  // rhs's trailing N dim: [lhs.dim(0)..lhs.dim(lhsRank-2), rhs.dim(rhsRank-1)].
+  SmallVector<int64_t> resultShape;
+  resultShape.reserve(lhsRank);
+  for (int64_t i = 0; i < lhsRank - 1; ++i)
+    resultShape.push_back(lhsShape.getDimSize(i));
+  resultShape.push_back(rhsShape.getDimSize(rhsRank - 1));
+
+  inferredReturnShapes.emplace_back(resultShape, lhsShape.getElementType());
+  return success();
+}
+
+LogicalResult TensixflowMatmulOp::verify() {
+  auto lhsType = cast<RankedTensorType>(getLhs().getType());
+  auto rhsType = cast<RankedTensorType>(getRhs().getType());
+
+  if (lhsType.getRank() < 2)
+    return emitOpError("expected lhs to have rank >= 2, got ")
+           << lhsType.getRank();
+  if (rhsType.getRank() < 2)
+    return emitOpError("expected rhs to have rank >= 2, got ")
+           << rhsType.getRank();
+
+  if (lhsType.getElementType() != rhsType.getElementType())
+    return emitOpError("expected lhs and rhs element types to match, got ")
+           << lhsType.getElementType() << " and " << rhsType.getElementType();
+
+  // Contracting dimension: lhs's last dim (K) must equal rhs's second-to-last
+  // dim (K). Only check when both are static.
+  int64_t lhsK = lhsType.getShape()[lhsType.getRank() - 1];
+  int64_t rhsK = rhsType.getShape()[rhsType.getRank() - 2];
+  if (!ShapedType::isDynamic(lhsK) && !ShapedType::isDynamic(rhsK) &&
+      lhsK != rhsK)
+    return emitOpError("mismatched contracting dimensions: lhs K = ")
+           << lhsK << " but rhs K = " << rhsK;
+
+  return success();
 }
 
 #define GET_OP_CLASSES

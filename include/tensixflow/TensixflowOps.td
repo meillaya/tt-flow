@@ -169,4 +169,33 @@ def TensixflowGeluOp : Tensixflow_Op<"gelu", [
   let assemblyFormat = "$input attr-dict `:` type($input)";
 }
 
+//===----------------------------------------------------------------------===//
+// TensixflowMatmulOp
+//===----------------------------------------------------------------------===//
+
+def TensixflowMatmulOp : Tensixflow_Op<"matmul", [
+    Pure,
+    DeclareOpInterfaceMethods<InferShapedTypeOpInterface,
+                              ["inferReturnTypeComponents"]>]> {
+  let summary = "Matrix multiplication operation";
+  let description = [{
+    The `tensixflow.matmul` operation computes a matrix product. For
+    `lhs` of shape `[..., M, K]` and `rhs` of shape `[K, N]`, the result has
+    shape `[..., M, N]` (batch dims taken from `lhs`).
+
+    Example:
+
+    ```mlir
+    %0 = tensixflow.matmul %x, %w
+        : tensor<1x2048x4096xbf16> x tensor<4096x12288xbf16>
+        -> tensor<1x2048x12288xbf16>
+    ```
+  }];
+
+  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `x` type($rhs) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 #endif // TENSIXFLOW_OPS
