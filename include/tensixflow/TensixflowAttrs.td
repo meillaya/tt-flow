@@ -68,4 +68,65 @@ def Tensixflow_TileLayoutAttr : AttrDef<Tensixflow_Dialect, "TensixflowTileLayou
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Tensixflow scheduler-plan (schedule) attribute.
+//===----------------------------------------------------------------------===//
+//
+// Assembly format (custom, round-trips):
+//
+//   #tensixflow.schedule<grid 8x8, act "row-major", weight "multicast",
+//     storage "L1", fusion "fused_rmsnorm_matmul",
+//     cbs [0:160:2048, 1:160:2048, 16:160:2048],
+//     dram_read 117440512, dram_write 50331648, l1 16777216,
+//     multicast 100663296, saved_read 16777216, saved_write 16777216,
+//     saved_intermediate 16777216>
+//
+// `grid YxX` is the core grid; `act`/`weight`/`storage`/`fusion` are the layout
+// decisions (quoted strings); `cbs [idx:depth:tileBytes, ...]` are the allocated
+// circular buffers (parallel index/depth/tile-bytes triples, possibly empty
+// between the two planning passes); the trailing integers are the static NoC
+// traffic estimate (DRAM/L1/multicast bytes) plus the fusion savings breakdown.
+
+def Tensixflow_ScheduleAttr : AttrDef<Tensixflow_Dialect, "TensixflowSchedule"> {
+  let summary = "Scheduler plan: grid, sharding, weight strategy, CB specs, NoC";
+  let mnemonic = "schedule";
+  let description = [{
+    A structured attribute recording the scheduler's plan for a graph: the core
+    grid (gridY x gridX), the activation-sharding scheme, the weight-distribution
+    strategy (replicate/shard/multicast), where the fused intermediate is stored
+    (L1 when fused, else DRAM), the fusion decision (fused_rmsnorm_matmul /
+    fused_mlp / none), the allocated circular buffers (parallel index/depth/
+    tile-bytes arrays), and the static NoC traffic estimate (DRAM read/write, L1,
+    multicast bytes) plus the fusion savings (saved DRAM reads/writes and the
+    intermediate bytes that never round-trip DRAM). Attached to the module by
+    --tensixflow-plan-noc-sharding (grid/sharding/weight/fusion/NoC, CB arrays
+    empty) and completed by --tensixflow-allocate-circular-buffers (CB arrays
+    filled). Consumed by tensixflow-translate --tensixflow-to-json. Pure metadata.
+  }];
+  // Variable-length fields are stored as attribute HANDLES (StringAttr /
+  // ArrayAttr-of-IntegerAttr), NOT as StringRef / ArrayRef<int64_t>: mixing the
+  // latter two in one generated parametric storage corrupts the string-blob
+  // offsets (the field adjacent to the arrays reads a dangling pointer). Handles
+  // keep the storage struct purely fixed-size (scalars + attribute pointers).
+  let parameters = (ins
+    "unsigned":$gridY,
+    "unsigned":$gridX,
+    "::mlir::StringAttr":$activationSharding,
+    "::mlir::StringAttr":$weightStrategy,
+    "::mlir::StringAttr":$intermediateStorage,
+    "::mlir::StringAttr":$fusion,
+    "::mlir::ArrayAttr":$cbIndices,
+    "::mlir::ArrayAttr":$cbDepths,
+    "::mlir::ArrayAttr":$cbTileBytes,
+    "int64_t":$dramReadBytes,
+    "int64_t":$dramWriteBytes,
+    "int64_t":$l1Bytes,
+    "int64_t":$multicastBytes,
+    "int64_t":$savedDramReadBytes,
+    "int64_t":$savedDramWriteBytes,
+    "int64_t":$savedIntermediateBytes
+  );
+  let hasCustomAssemblyFormat = 1;
+}
+
 #endif // TENSIXFLOW_ATTRS

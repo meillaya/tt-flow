@@ -27,7 +27,24 @@ Field names are `snake_case` to match the user-spec report format.
 | `perf` | `PerfEstimate` | Static roofline-style performance estimate. |
 | `viz` | `VizSections` | Visualizer section placeholders (todo 43 fills detail). |
 
-All eight fields are required.
+All eight fields above are required.
+
+### Optional user-facing report fields (todo 30)
+
+`tensixflow-translate --tensixflow-to-json` flattens the planner's
+"Chosen layout:" report to the top level so scripts can query it directly.
+These six fields are **optional** (NOT in `required`) so the nested
+`plan::toJson` output — which carries the same data under `layout`/`noc` and
+omits these top-level keys — also stays schema-valid:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `activation_sharding` | string | Activation sharding scheme (e.g. `row-major`); mirrors `layout.activation_sharding`. |
+| `weight_strategy` | string | Weight distribution: `replicate`, `shard`, or `multicast`; mirrors `layout.weight_strategy`. |
+| `intermediate_storage` | string | Where the fused intermediate lives: `L1` when fused, else `DRAM`. |
+| `fusion` | string | Fusion decision: `fused_rmsnorm_matmul`, `fused_mlp`, or `none`. |
+| `estimated_dram_reads_saved` | int64 | Estimated DRAM read bytes saved by fusion; `0` when unfused. |
+| `estimated_intermediate_writes_saved` | int64 | Estimated intermediate DRAM write bytes saved by fusion; `0` when unfused. |
 
 ## `TensorDesc`
 
@@ -91,6 +108,19 @@ All eight fields are required.
 ## Validation
 
 `schema/plan.schema.json` is a draft-07 JSON Schema with `additionalProperties:
-false` and every field above listed as required, so a plan with a missing or
-wrongly-typed field is rejected. `parsePlan` (C++) enforces the same contract:
-it returns `std::nullopt` when any required field is absent or mistyped.
+false` at the top level and in every nested object, so a plan with an undeclared
+or wrongly-typed field is rejected. The eight core fields are `required`; the six
+user-facing report fields above are optional. `parsePlan` (C++) enforces the same
+contract for the core fields: it returns `std::nullopt` when any required field is
+absent or mistyped.
+
+To validate a `tensixflow-translate` plan document strictly (the nix dev shell has
+no `jsonschema` module), use a Draft7 validator if one is available:
+
+```sh
+python3 -c "import json,jsonschema; s=json.load(open('schema/plan.schema.json')); d=json.load(open('plan.json')); jsonschema.Draft7Validator(s).validate(d); print('SCHEMA-VALID')"
+```
+
+otherwise run the structural validator that enforces `type`/`required`/
+`properties`/`additionalProperties:false`/`items`/`enum` recursively (the subset
+this schema uses).

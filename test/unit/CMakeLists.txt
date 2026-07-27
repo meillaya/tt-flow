@@ -81,3 +81,16 @@ target_link_libraries(NoCEstimatorTest PRIVATE
 )
 
 add_test(NAME noc_estimator COMMAND NoCEstimatorTest)
+
+# Plan-report assembler test (todo 30). Links the scheduler lib (which carries
+# buildPlanReport/formatPlanReport + all four planners and reuses the schema lib
+# PUBLIC for plan::toJson).
+add_executable(PlanReportTest PlanReportTest.cpp)
+target_link_libraries(PlanReportTest PRIVATE
+  MLIRTensixflowScheduler
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME plan_report COMMAND PlanReportTest)

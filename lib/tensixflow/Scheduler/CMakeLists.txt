@@ -14,6 +14,7 @@ add_library(MLIRTensixflowScheduler STATIC
   WeightPlanner.cpp
   CBAllocator.cpp
   NoCEstimator.cpp
+  PlanReport.cpp
 )
 # Expose this directory so consumers can #include "Model.h" / "L1Model.h" etc.
 target_include_directories(MLIRTensixflowScheduler PUBLIC

@@ -20,6 +20,32 @@
       "type": "string",
       "description": "Identifier of the fused graph this plan schedules (e.g. \"rmsnorm_matmul\")."
     },
+    "activation_sharding": {
+      "type": "string",
+      "description": "Optional user-facing report field (the \"Chosen layout:\" report): activation sharding scheme, e.g. \"row-major\". Emitted at the top level by tensixflow-translate; mirrors layout.activation_sharding. Not required so plan::toJson output (which nests it under layout) stays valid."
+    },
+    "weight_strategy": {
+      "type": "string",
+      "description": "Optional user-facing report field: weight distribution strategy (\"replicate\"/\"shard\"/\"multicast\"). Emitted at the top level by tensixflow-translate; mirrors layout.weight_strategy."
+    },
+    "intermediate_storage": {
+      "type": "string",
+      "description": "Optional user-facing report field: where the fused intermediate is stored (\"L1\" when fused, else \"DRAM\")."
+    },
+    "fusion": {
+      "type": "string",
+      "description": "Optional user-facing report field: the fusion decision (\"fused_rmsnorm_matmul\"/\"fused_mlp\"/\"none\")."
+    },
+    "estimated_dram_reads_saved": {
+      "type": "integer",
+      "format": "int64",
+      "description": "Optional user-facing report field: estimated DRAM read bytes saved by fusion (the intermediate that no longer round-trips DRAM); 0 when unfused."
+    },
+    "estimated_intermediate_writes_saved": {
+      "type": "integer",
+      "format": "int64",
+      "description": "Optional user-facing report field: estimated intermediate DRAM write bytes saved by fusion; 0 when unfused."
+    },
     "tensors": {
       "type": "array",
       "description": "Tensors referenced by the plan.",

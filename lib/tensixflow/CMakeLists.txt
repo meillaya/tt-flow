@@ -4,6 +4,8 @@ add_mlir_dialect_library(MLIRTensixflow
   TensixflowPasses.cpp
   InferTileLayoutPass.cpp
   FuseRmsnormMatmulPass.cpp
+  PlanNocShardingPass.cpp
+  AllocateCircularBuffersPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/tensixflow
@@ -20,6 +22,7 @@ add_mlir_dialect_library(MLIRTensixflow
   MLIRFunctionInterfaces
   MLIRPass
   MLIRTransforms
+  MLIRTensixflowScheduler
   )
 
 # Plan/perf/viz schema library (D15). Own subdirectory because LLVM enforces one
