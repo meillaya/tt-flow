@@ -43,3 +43,9 @@ add_subdirectory(tools/tensixflow-translate)
 # lit/FileCheck regression suite (defines the check-tensixflow target). Must come
 # after tools/ so the tensixflow-opt target it DEPENDS on already exists.
 add_subdirectory(test)
+
+# C++ unit-test suite (GoogleTest + ctest). Separate from the lit suite above;
+# requires the MLIRTensixflowSchema lib from lib/tensixflow. enable_testing()
+# registers the add_test() entries with ctest (e.g. `ctest -R plan_schema`).
+enable_testing()
+add_subdirectory(test/unit)

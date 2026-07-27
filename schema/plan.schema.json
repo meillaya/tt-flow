@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tensixflow.dev/schema/plan.schema.json",
+  "title": "TensixFlow Plan",
+  "description": "Single source of truth (D15) for the plan/perf/viz JSON contract shared by the scheduler, the plan/perf report, and the HTML visualizer. Field names are snake_case to match the user spec report format.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "graph_id",
+    "tensors",
+    "layout",
+    "shard_grid",
+    "cb_specs",
+    "noc",
+    "perf",
+    "viz"
+  ],
+  "properties": {
+    "graph_id": {
+      "type": "string",
+      "description": "Identifier of the fused graph this plan schedules (e.g. \"rmsnorm_matmul\")."
+    },
+    "tensors": {
+      "type": "array",
+      "description": "Tensors referenced by the plan.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "shape", "dtype", "placement"],
+        "properties": {
+          "name": { "type": "string", "description": "Logical tensor name." },
+          "shape": {
+            "type": "array",
+            "description": "Static shape (extent of each dimension).",
+            "items": { "type": "integer", "format": "int64" }
+          },
+          "dtype": { "type": "string", "description": "Element dtype, e.g. \"bf16\" or \"fp32\"." },
+          "placement": { "type": "string", "enum": ["DRAM", "L1"], "description": "Memory placement." }
+        }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activation_sharding", "weight_strategy"],
+      "properties": {
+        "activation_sharding": { "type": "string", "description": "Activation sharding scheme, e.g. \"row-major\"." },
+        "weight_strategy": { "type": "string", "enum": ["replicate", "shard", "multicast"], "description": "Weight distribution strategy." }
+      }
+    },
+    "shard_grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grid_y", "grid_x"],
+      "properties": {
+        "grid_y": { "type": "integer", "format": "int64", "description": "Core-grid height (e.g. 8)." },
+        "grid_x": { "type": "integer", "format": "int64", "description": "Core-grid width (e.g. 8)." }
+      }
+    },
+    "cb_specs": {
+      "type": "array",
+      "description": "Circular-buffer allocations.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["index", "depth", "tile_bytes"],
+        "properties": {
+          "index": { "type": "integer", "format": "int64", "description": "CB index (tt::CBIndex, 0..31)." },
+          "depth": { "type": "integer", "format": "int64", "description": "Depth in tiles." },
+          "tile_bytes": { "type": "integer", "format": "int64", "description": "Bytes per tile (32x32 bf16 = 2048)." }
+        }
+      }
+    },
+    "noc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dram_read_bytes", "dram_write_bytes", "l1_bytes", "multicast_bytes"],
+      "properties": {
+        "dram_read_bytes": { "type": "integer", "format": "int64", "description": "Estimated DRAM read traffic (bytes)." },
+        "dram_write_bytes": { "type": "integer", "format": "int64", "description": "Estimated DRAM write traffic (bytes)." },
+        "l1_bytes": { "type": "integer", "format": "int64", "description": "Estimated L1 traffic (bytes)." },
+        "multicast_bytes": { "type": "integer", "format": "int64", "description": "Estimated NoC multicast traffic (bytes)." }
+      }
+    },
+    "perf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["est_cycles", "compute_util", "bottleneck", "suggestions"],
+      "properties": {
+        "est_cycles": { "type": "integer", "format": "int64", "description": "Estimated total cycles." },
+        "compute_util": { "type": "number", "description": "Compute utilization fraction (0.0..1.0)." },
+        "bottleneck": { "type": "string", "description": "Classification, e.g. \"memory\" or \"compute\"." },
+        "suggestions": {
+          "type": "array",
+          "description": "Suggested optimizations.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "viz": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core_grid", "shards", "noc_routes", "cb_usage", "timeline"],
+      "properties": {
+        "core_grid": { "type": "string", "description": "Visualizer core-grid section placeholder (todo 43 fills detail)." },
+        "shards": { "type": "string", "description": "Visualizer shards section placeholder." },
+        "noc_routes": { "type": "string", "description": "Visualizer NoC-routes section placeholder." },
+        "cb_usage": { "type": "string", "description": "Visualizer CB-usage section placeholder." },
+        "timeline": { "type": "string", "description": "Visualizer timeline section placeholder." }
+      }
+    }
+  }
+}

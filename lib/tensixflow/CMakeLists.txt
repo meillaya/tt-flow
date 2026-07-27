@@ -21,3 +21,7 @@ add_mlir_dialect_library(MLIRTensixflow
   MLIRPass
   MLIRTransforms
   )
+
+# Plan/perf/viz schema library (D15). Own subdirectory because LLVM enforces one
+# build target per directory; see Schema/CMakeLists.txt.
+add_subdirectory(Schema)

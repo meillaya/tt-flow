@@ -31,6 +31,14 @@
               pkgs.ninja
               pkgs.python3
               pkgs.lit
+              # GoogleTest for the C++ unit-test suite (todo 24+). `gtest.dev`
+              # carries the headers + lib/cmake/GTest config and propagates the
+              # `out` shared libs; `gtest` (out) is listed explicitly so the
+              # runtime .so dir is on the link/runtime path regardless of
+              # propagation. outputsToInstall for gtest is only "out", so the
+              # dev output MUST be named explicitly for find_package(GTest).
+              pkgs.gtest
+              pkgs.gtest.dev
             ];
 
             shellHook = ''
