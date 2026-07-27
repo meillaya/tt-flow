@@ -8,9 +8,12 @@
 #include "tensixflow/TensixflowOps.h"
 #include "tensixflow/TensixflowDialect.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 
@@ -57,6 +60,8 @@ void TensixflowConstantOp::print(OpAsmPrinter &p) {
   p << ' ' << getValue();
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"value"});
 }
+
+OpFoldResult TensixflowConstantOp::fold(FoldAdaptor) { return getValue(); }
 
 //===----------------------------------------------------------------------===//
 // TensixflowMatmulOp
@@ -183,6 +188,58 @@ LogicalResult TensixflowRmsnormOp::verify() {
            << inputLastDim << ")";
 
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// TensixflowAddOp canonicalization
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Returns true if `value` is a splat-zero constant tensor (the additive
+/// identity). Matches any ConstantLike op (e.g. tensixflow.constant) via
+/// m_Constant, then requires a splat DenseElementsAttr of float element type
+/// (bf16/fp32) whose splat APFloat isZero(). Non-float element types are
+/// rejected so getSplatValue<APFloat> is never called on an integer attr.
+static bool isZeroConstant(Value value) {
+  Attribute attr;
+  if (!matchPattern(value, m_Constant(&attr)))
+    return false;
+  auto dense = dyn_cast_or_null<DenseElementsAttr>(attr);
+  if (!dense || !dense.isSplat())
+    return false;
+  if (!isa<FloatType>(dense.getElementType()))
+    return false;
+  return dense.getSplatValue<APFloat>().isZero();
+}
+
+/// add %x, %zero -> %x  and the symmetric  add %zero, %x -> %x, where the zero
+/// operand is a splat-zero constant tensor. If neither operand is a zero
+/// constant the pattern does nothing (returns failure). Deliberately the ONLY
+/// add canonicalization: more aggressive folds (e.g. add %x,%x -> scale) are
+/// withheld so they cannot defeat the Wave-4 fusion matcher.
+struct AddIdentityZero final : OpRewritePattern<TensixflowAddOp> {
+  using OpRewritePattern<TensixflowAddOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TensixflowAddOp op,
+                                PatternRewriter &rewriter) const final {
+    if (isZeroConstant(op.getRhs())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+    if (isZeroConstant(op.getLhs())) {
+      rewriter.replaceOp(op, op.getRhs());
+      return success();
+    }
+    return failure();
+  }
+};
+
+} // namespace
+
+void TensixflowAddOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                  MLIRContext *ctx) {
+  patterns.add<AddIdentityZero>(ctx);
 }
 
 #define GET_OP_CLASSES

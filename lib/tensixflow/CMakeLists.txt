@@ -18,4 +18,5 @@ add_mlir_dialect_library(MLIRTensixflow
   MLIRFuncDialect
   MLIRFunctionInterfaces
   MLIRPass
+  MLIRTransforms
   )

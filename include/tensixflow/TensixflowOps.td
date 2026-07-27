@@ -114,6 +114,7 @@ def TensixflowConstantOp : Tensixflow_Op<"constant", [Pure, ConstantLike]> {
   let results = (outs AnyType:$result);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 0;
+  let hasFolder = 1;
 
   let builders = [
     OpBuilder<(ins "Attribute":$value), [{
@@ -144,6 +145,7 @@ def TensixflowAddOp : Tensixflow_Op<"add", [
   let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+  let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//
