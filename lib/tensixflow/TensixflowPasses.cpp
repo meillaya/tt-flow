@@ -5,10 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// No-op stub definitions for the seven tensixflow passes declared in
+// No-op stub definitions for the tensixflow passes declared in
 // TensixflowPasses.td so that GEN_PASS_REGISTRATION links and multi-pass
 // pipelines compose. Each later todo replaces its stub with a real body; the
 // generated anchor a body must derive from is `impl::<Def>Base<Derived>`.
+//
+// InferTileLayoutPass has a real body in InferTileLayoutPass.cpp (its
+// GEN_PASS_DEF_* + class live there), so it is intentionally absent here to
+// keep exactly one definition of the pass and its createXxx().
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,8 +24,8 @@ namespace mlir {
 namespace tensixflow {
 
 // Emit the impl::<Def>Base<DerivedT> base classes (in mlir::tensixflow::impl)
-// and the public createXxx() definitions for all seven passes.
-#define GEN_PASS_DEF_INFERTILELAYOUTPASS
+// and the public createXxx() definitions for the six stubbed passes.
+// InferTileLayoutPass's GEN_PASS_DEF lives in InferTileLayoutPass.cpp.
 #define GEN_PASS_DEF_CANONICALIZEPASS
 #define GEN_PASS_DEF_FUSERMSNORMMATMULPASS
 #define GEN_PASS_DEF_PLANNOCSHARDINGPASS
@@ -43,7 +47,6 @@ namespace {
     void runOnOperation() final {}                                             \
   };
 
-TENSIXFLOW_STUB_PASS(InferTileLayoutPass)
 TENSIXFLOW_STUB_PASS(CanonicalizePass)
 TENSIXFLOW_STUB_PASS(FuseRmsnormMatmulPass)
 TENSIXFLOW_STUB_PASS(PlanNocShardingPass)
