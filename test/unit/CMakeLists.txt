@@ -69,3 +69,15 @@ target_link_libraries(CBAllocatorTest PRIVATE
 )
 
 add_test(NAME cb_allocator COMMAND CBAllocatorTest)
+
+# NoC traffic estimator test (todo 29). Links the scheduler lib (which carries
+# the NoC estimator + weight planner and reuses the schema lib PUBLIC).
+add_executable(NoCEstimatorTest NoCEstimatorTest.cpp)
+target_link_libraries(NoCEstimatorTest PRIVATE
+  MLIRTensixflowScheduler
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME noc_estimator COMMAND NoCEstimatorTest)
