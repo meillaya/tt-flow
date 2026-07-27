@@ -5,10 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Skeleton `tensixflow-opt` driver modeled on llvm-project's
-// mlir/examples/standalone/standalone-opt. Registers only the upstream Func +
-// Arith dialects for now; the TensixflowDialect is registered here in a later
-// todo.
+// `tensixflow-opt` driver modeled on llvm-project's
+// mlir/examples/standalone/standalone-opt. Registers the TensixflowDialect
+// (func/return/constant/add/gelu ops) plus the upstream Func + Arith dialects.
 //
 //===----------------------------------------------------------------------===//
 
