@@ -44,3 +44,16 @@ target_link_libraries(GridPlannerTest PRIVATE
 )
 
 add_test(NAME grid_planner COMMAND GridPlannerTest)
+
+# Weight-strategy planner test (todo 27). Links the scheduler lib (which carries
+# the shared L1-budget constants + WeightPlanner and reuses the schema lib
+# PUBLIC).
+add_executable(WeightPlannerTest WeightPlannerTest.cpp)
+target_link_libraries(WeightPlannerTest PRIVATE
+  MLIRTensixflowScheduler
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME weight_planner COMMAND WeightPlannerTest)
