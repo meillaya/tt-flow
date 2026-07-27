@@ -223,4 +223,66 @@ def TensixflowRmsnormOp : Tensixflow_Op<"rmsnorm", [
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// TensixflowFusedRmsnormMatmulOp
+//===----------------------------------------------------------------------===//
+
+def TensixflowFusedRmsnormMatmulOp : Tensixflow_Op<"fused_rmsnorm_matmul", [
+    Pure,
+    DeclareOpInterfaceMethods<InferShapedTypeOpInterface,
+                              ["inferReturnTypeComponents"]>]> {
+  let summary = "Fused RMSNorm + MatMul operation";
+  let description = [{
+    The `tensixflow.fused_rmsnorm_matmul` operation computes
+    `result = matmul(rmsnorm(input, gamma), weight)` as a single fused kernel,
+    eliminating the DRAM round-trip of the normalized intermediate. For `input`
+    of shape `[..., M, K]`, `gamma` of shape `[K]`, and `weight` of shape
+    `[K, N]`, the result has shape `[..., M, N]` (same as the equivalent
+    matmul).
+  }];
+
+  let arguments = (ins AnyRankedTensor:$input,
+                       AnyRankedTensor:$gamma,
+                       AnyRankedTensor:$weight,
+                       DefaultValuedAttr<F32Attr, "1.0e-6">:$epsilon);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$input `,` $gamma `,` $weight attr-dict `:` "
+                       "type($input) `,` type($gamma) `,` type($weight) "
+                       "`->` type($result)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// TensixflowFusedMlpOp
+//===----------------------------------------------------------------------===//
+
+def TensixflowFusedMlpOp : Tensixflow_Op<"fused_mlp", [
+    Pure,
+    DeclareOpInterfaceMethods<InferShapedTypeOpInterface,
+                              ["inferReturnTypeComponents"]>]> {
+  let summary = "Fused MLP block (RMSNorm + MatMul + Bias + GELU + MatMul + Residual)";
+  let description = [{
+    The `tensixflow.fused_mlp` operation computes
+    `result = (gelu(matmul(rmsnorm(input, gamma), w1) + b1) @ w2) + residual`
+    as a single fused kernel. For `input` of shape `[..., M, K]`, `gamma` of
+    shape `[K]`, `w1` of shape `[K, H]`, `b1` of shape `[H]`, `w2` of shape
+    `[H, N]`, and `residual` of shape `[..., M, N]`, the result has the SAME
+    shape as `residual`.
+  }];
+
+  let arguments = (ins AnyRankedTensor:$input,
+                       AnyRankedTensor:$gamma,
+                       AnyRankedTensor:$w1,
+                       AnyRankedTensor:$b1,
+                       AnyRankedTensor:$w2,
+                       AnyRankedTensor:$residual,
+                       DefaultValuedAttr<F32Attr, "1.0e-6">:$epsilon);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$input `,` $gamma `,` $w1 `,` $b1 `,` $w2 `,` "
+                       "$residual attr-dict `:` type($input) `,` "
+                       "type($gamma) `,` type($w1) `,` type($b1) `,` "
+                       "type($w2) `,` type($residual) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 #endif // TENSIXFLOW_OPS

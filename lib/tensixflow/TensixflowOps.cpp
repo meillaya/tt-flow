@@ -191,6 +191,223 @@ LogicalResult TensixflowRmsnormOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// TensixflowFusedRmsnormMatmulOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult TensixflowFusedRmsnormMatmulOp::inferReturnTypeComponents(
+    MLIRContext *context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes,
+    OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) {
+  ShapeAdaptor inputShape = operands.getShape(0);
+  ShapeAdaptor weightShape = operands.getShape(2);
+
+  if (!inputShape.hasRank() || !weightShape.hasRank())
+    return emitOptionalError(
+        location, "expected ranked tensors for fused_rmsnorm_matmul operands");
+
+  int64_t inputRank = inputShape.getRank();
+  int64_t weightRank = weightShape.getRank();
+  if (inputRank < 2)
+    return emitOptionalError(location,
+                             "expected input to have rank >= 2, got ",
+                             inputRank);
+  if (weightRank < 2)
+    return emitOptionalError(location,
+                             "expected weight to have rank >= 2, got ",
+                             weightRank);
+
+  if (inputShape.getElementType() != weightShape.getElementType())
+    return emitOptionalError(
+        location, "expected input and weight element types to match, got ",
+        inputShape.getElementType(), " and ", weightShape.getElementType());
+
+  // Result shape = matmul(rmsnorm(input), weight): the input's batch/M dims
+  // (all but the normalized/contracting last dim) followed by weight's
+  // trailing N dim: [input.dim(0)..input.dim(inputRank-2), weight.dim(N-1)].
+  SmallVector<int64_t> resultShape;
+  resultShape.reserve(inputRank);
+  for (int64_t i = 0; i < inputRank - 1; ++i)
+    resultShape.push_back(inputShape.getDimSize(i));
+  resultShape.push_back(weightShape.getDimSize(weightRank - 1));
+
+  inferredReturnShapes.emplace_back(resultShape, inputShape.getElementType());
+  return success();
+}
+
+LogicalResult TensixflowFusedRmsnormMatmulOp::verify() {
+  auto inputType = cast<RankedTensorType>(getInput().getType());
+  auto gammaType = cast<RankedTensorType>(getGamma().getType());
+  auto weightType = cast<RankedTensorType>(getWeight().getType());
+
+  if (inputType.getRank() < 2)
+    return emitOpError("expected input to have rank >= 2, got ")
+           << inputType.getRank();
+  if (weightType.getRank() < 2)
+    return emitOpError("expected weight to have rank >= 2, got ")
+           << weightType.getRank();
+  if (gammaType.getRank() != 1)
+    return emitOpError("gamma must be a 1-D tensor, got rank ")
+           << gammaType.getRank();
+
+  if (inputType.getElementType() != gammaType.getElementType() ||
+      inputType.getElementType() != weightType.getElementType())
+    return emitOpError(
+               "expected input, gamma, and weight element types to match, got ")
+           << inputType.getElementType() << ", " << gammaType.getElementType()
+           << ", and " << weightType.getElementType();
+
+  // Gamma normalizes the input's last dimension. Only check when both static.
+  int64_t inputLastDim = inputType.getShape()[inputType.getRank() - 1];
+  int64_t gammaSize = gammaType.getShape()[0];
+  if (!ShapedType::isDynamic(inputLastDim) &&
+      !ShapedType::isDynamic(gammaSize) && gammaSize != inputLastDim)
+    return emitOpError("gamma size (")
+           << gammaSize << ") must match the input's last dimension ("
+           << inputLastDim << ")";
+
+  // Contracting dimension: input's last dim (K) must equal weight's
+  // second-to-last dim (K). Only check when both are static.
+  int64_t weightK = weightType.getShape()[weightType.getRank() - 2];
+  if (!ShapedType::isDynamic(inputLastDim) &&
+      !ShapedType::isDynamic(weightK) && inputLastDim != weightK)
+    return emitOpError("mismatched contracting dimensions: input K = ")
+           << inputLastDim << " but weight K = " << weightK;
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// TensixflowFusedMlpOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult TensixflowFusedMlpOp::inferReturnTypeComponents(
+    MLIRContext *context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes,
+    OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) {
+  ShapeAdaptor inputShape = operands.getShape(0);
+  ShapeAdaptor residualShape = operands.getShape(5);
+
+  if (!inputShape.hasRank() || !residualShape.hasRank())
+    return emitOptionalError(
+        location, "expected ranked tensors for fused_mlp operands");
+
+  if (inputShape.getRank() < 2)
+    return emitOptionalError(location,
+                             "expected input to have rank >= 2, got ",
+                             inputShape.getRank());
+
+  // The fused MLP output is the residual-added result, so it has the SAME
+  // shape as the residual operand; element type follows the input.
+  SmallVector<int64_t> resultShape;
+  residualShape.getDims(resultShape);
+  inferredReturnShapes.emplace_back(resultShape, inputShape.getElementType());
+  return success();
+}
+
+LogicalResult TensixflowFusedMlpOp::verify() {
+  auto inputType = cast<RankedTensorType>(getInput().getType());
+  auto gammaType = cast<RankedTensorType>(getGamma().getType());
+  auto w1Type = cast<RankedTensorType>(getW1().getType());
+  auto b1Type = cast<RankedTensorType>(getB1().getType());
+  auto w2Type = cast<RankedTensorType>(getW2().getType());
+  auto residualType = cast<RankedTensorType>(getResidual().getType());
+
+  if (inputType.getRank() < 2)
+    return emitOpError("expected input to have rank >= 2, got ")
+           << inputType.getRank();
+  if (gammaType.getRank() != 1)
+    return emitOpError("gamma must be a 1-D tensor, got rank ")
+           << gammaType.getRank();
+  if (w1Type.getRank() < 2)
+    return emitOpError("expected w1 to have rank >= 2, got ")
+           << w1Type.getRank();
+  if (w2Type.getRank() < 2)
+    return emitOpError("expected w2 to have rank >= 2, got ")
+           << w2Type.getRank();
+  if (b1Type.getRank() != 1)
+    return emitOpError("b1 must be a 1-D tensor, got rank ")
+           << b1Type.getRank();
+
+  Type inputElt = inputType.getElementType();
+  if (gammaType.getElementType() != inputElt ||
+      w1Type.getElementType() != inputElt ||
+      b1Type.getElementType() != inputElt ||
+      w2Type.getElementType() != inputElt ||
+      residualType.getElementType() != inputElt)
+    return emitOpError(
+        "expected input, gamma, w1, b1, w2, and residual element types to "
+        "match, got ")
+           << inputElt << ", " << gammaType.getElementType() << ", "
+           << w1Type.getElementType() << ", " << b1Type.getElementType()
+           << ", " << w2Type.getElementType() << ", and "
+           << residualType.getElementType();
+
+  int64_t inputLastDim = inputType.getShape()[inputType.getRank() - 1];
+
+  // Gamma normalizes the input's last dimension.
+  int64_t gammaSize = gammaType.getShape()[0];
+  if (!ShapedType::isDynamic(inputLastDim) &&
+      !ShapedType::isDynamic(gammaSize) && gammaSize != inputLastDim)
+    return emitOpError("gamma size (")
+           << gammaSize << ") must match the input's last dimension ("
+           << inputLastDim << ")";
+
+  // First matmul contracting dim: w1's second-to-last dim (K1) == input K.
+  int64_t w1K = w1Type.getShape()[w1Type.getRank() - 2];
+  if (!ShapedType::isDynamic(inputLastDim) && !ShapedType::isDynamic(w1K) &&
+      w1K != inputLastDim)
+    return emitOpError("mismatched contracting dimensions for w1: input K = ")
+           << inputLastDim << " but w1 K = " << w1K;
+
+  // Second matmul contracting dim: w2's second-to-last dim (K2) == w1's
+  // output/hidden dim H (w1's last dim).
+  int64_t w1H = w1Type.getShape()[w1Type.getRank() - 1];
+  int64_t w2K = w2Type.getShape()[w2Type.getRank() - 2];
+  if (!ShapedType::isDynamic(w1H) && !ShapedType::isDynamic(w2K) &&
+      w2K != w1H)
+    return emitOpError("mismatched contracting dimensions for w2: w1 hidden = ")
+           << w1H << " but w2 K = " << w2K;
+
+  // Bias broadcasts over the hidden dim H.
+  int64_t b1Size = b1Type.getShape()[0];
+  if (!ShapedType::isDynamic(w1H) && !ShapedType::isDynamic(b1Size) &&
+      b1Size != w1H)
+    return emitOpError("b1 size (")
+           << b1Size << ") must match w1's output dimension (" << w1H << ")";
+
+  // The residual add requires the residual's last dim (N) to match w2's
+  // output dim, and its leading/batch dims to match the input's.
+  int64_t w2N = w2Type.getShape()[w2Type.getRank() - 1];
+  int64_t residualLastDim =
+      residualType.getShape()[residualType.getRank() - 1];
+  if (!ShapedType::isDynamic(w2N) && !ShapedType::isDynamic(residualLastDim) &&
+      w2N != residualLastDim)
+    return emitOpError("w2 output dimension (")
+           << w2N << ") must match the residual's last dimension ("
+           << residualLastDim << ")";
+
+  if (residualType.getRank() != inputType.getRank())
+    return emitOpError("expected residual rank (")
+           << residualType.getRank() << ") to match input rank ("
+           << inputType.getRank() << ")";
+
+  for (int64_t i = 0, e = inputType.getRank() - 1; i < e; ++i) {
+    int64_t residualDim = residualType.getShape()[i];
+    int64_t inputDim = inputType.getShape()[i];
+    if (!ShapedType::isDynamic(residualDim) &&
+        !ShapedType::isDynamic(inputDim) && residualDim != inputDim)
+      return emitOpError("residual batch dimension ")
+             << i << " (" << residualDim
+             << ") must match the input's batch dimension (" << inputDim
+             << ")";
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // TensixflowAddOp canonicalization
 //===----------------------------------------------------------------------===//
 
