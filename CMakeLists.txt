@@ -26,3 +26,7 @@ set_target_properties(mlir-tblgen PROPERTIES IMPORTED_LOCATION "${MLIR_TABLEGEN_
 option(TENSIXFLOW_ENABLE_RUNTIME_STUBS "Generate compile-only stub tt-metal headers for codegen checks" ON)
 
 add_subdirectory(tools/tensixflow-opt)
+
+# lit/FileCheck regression suite (defines the check-tensixflow target). Must come
+# after tools/ so the tensixflow-opt target it DEPENDS on already exists.
+add_subdirectory(test)
