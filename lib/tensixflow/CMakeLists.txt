@@ -3,6 +3,7 @@ add_mlir_dialect_library(MLIRTensixflow
   TensixflowOps.cpp
   TensixflowPasses.cpp
   InferTileLayoutPass.cpp
+  FuseRmsnormMatmulPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/tensixflow

@@ -12,9 +12,10 @@
 //
 // CanonicalizePass has a real body below (it applies the dialect's
 // canonicalization patterns via the greedy rewrite driver). InferTileLayoutPass
-// has a real body in InferTileLayoutPass.cpp (its GEN_PASS_DEF_* + class live
-// there), so it is intentionally absent here to keep exactly one definition of
-// the pass and its createXxx().
+// and FuseRmsnormMatmulPass have real bodies in InferTileLayoutPass.cpp and
+// FuseRmsnormMatmulPass.cpp respectively (their GEN_PASS_DEF_* + classes live
+// there), so they are intentionally absent here to keep exactly one definition
+// of each pass and its createXxx().
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,10 +29,10 @@ namespace mlir {
 namespace tensixflow {
 
 // Emit the impl::<Def>Base<DerivedT> base classes (in mlir::tensixflow::impl)
-// and the public createXxx() definitions for the six stubbed passes.
-// InferTileLayoutPass's GEN_PASS_DEF lives in InferTileLayoutPass.cpp.
+// and the public createXxx() definitions for the passes whose bodies live in
+// this TU. InferTileLayoutPass's GEN_PASS_DEF lives in InferTileLayoutPass.cpp
+// and FuseRmsnormMatmulPass's in FuseRmsnormMatmulPass.cpp.
 #define GEN_PASS_DEF_CANONICALIZEPASS
-#define GEN_PASS_DEF_FUSERMSNORMMATMULPASS
 #define GEN_PASS_DEF_PLANNOCSHARDINGPASS
 #define GEN_PASS_DEF_ALLOCATECIRCULARBUFFERSPASS
 #define GEN_PASS_DEF_LOWERTOTTKERNELPASS
@@ -51,7 +52,6 @@ namespace {
     void runOnOperation() final {}                                             \
   };
 
-TENSIXFLOW_STUB_PASS(FuseRmsnormMatmulPass)
 TENSIXFLOW_STUB_PASS(PlanNocShardingPass)
 TENSIXFLOW_STUB_PASS(AllocateCircularBuffersPass)
 TENSIXFLOW_STUB_PASS(LowerToTTKernelPass)
