@@ -14,7 +14,7 @@
 
 // CHECK-LABEL: tensixflow.func @single_use
 // CHECK-SAME: (%[[X:[a-z0-9]+]]: tensor<1x2048x4096xbf16>, %[[GAMMA:[a-z0-9]+]]: tensor<4096xbf16>, %[[W:[a-z0-9]+]]: tensor<4096x12288xbf16>) -> tensor<1x2048x12288xbf16>
-// CHECK: %[[R:[a-z0-9]+]] = tensixflow.fused_rmsnorm_matmul %[[X]], %[[GAMMA]], %[[W]] : tensor<1x2048x4096xbf16>, tensor<4096xbf16>, tensor<4096x12288xbf16> -> tensor<1x2048x12288xbf16>
+// CHECK: %[[R:[a-z0-9]+]] = tensixflow.fused_rmsnorm_matmul %[[X]], %[[GAMMA]], %[[W]] {tensixflow.eliminated_bytes = 16777216 : i64, tensixflow.eliminated_tensors = 1 : i64} : tensor<1x2048x4096xbf16>, tensor<4096xbf16>, tensor<4096x12288xbf16> -> tensor<1x2048x12288xbf16>
 // CHECK-NOT: tensixflow.rmsnorm
 // CHECK-NOT: tensixflow.matmul
 // CHECK: tensixflow.return %[[R]] : tensor<1x2048x12288xbf16>

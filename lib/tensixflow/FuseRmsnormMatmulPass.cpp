@@ -39,6 +39,20 @@ namespace tensixflow {
 
 namespace {
 
+/// Bytes occupied by the intermediate tensor a fusion eliminates: the element
+/// count of a statically-shaped value's type times its element byte width
+/// (bf16 = 2). Returns 0 for a dynamic shape or a non-int/float element type,
+/// so such an intermediate simply contributes nothing to the byte tally.
+static int64_t eliminatedBytesOf(Value v) {
+  auto shaped = dyn_cast<ShapedType>(v.getType());
+  if (!shaped || !shaped.hasStaticShape())
+    return 0;
+  Type elem = shaped.getElementType();
+  if (!elem.isIntOrFloat())
+    return 0;
+  return shaped.getNumElements() * (elem.getIntOrFloatBitWidth() / 8);
+}
+
 /// Fuses `rmsnorm(%input, %gamma)` into a following `matmul(., %weight)` when
 /// the rmsnorm result is the matmul's LHS and has exactly one use. The matmul
 /// is replaced with `fused_rmsnorm_matmul(%input, %gamma, %weight)` (result
@@ -71,9 +85,19 @@ struct FuseRmsnormMatmulPattern : OpRewritePattern<TensixflowRmsnormOp> {
     // result type must be spelled out. The matmul's result type IS the fused
     // result shape (input leading/batch dims + weight's last dim), so passing
     // it keeps the replacement type-correct; epsilon rides the FloatAttr arg.
-    rewriter.replaceOpWithNewOp<TensixflowFusedRmsnormMatmulOp>(
+    // Capture the eliminated intermediate's byte count BEFORE erasing the
+    // rmsnorm so the type is still live to query.
+    int64_t eliminatedBytes = eliminatedBytesOf(result);
+    auto fused = rewriter.replaceOpWithNewOp<TensixflowFusedRmsnormMatmulOp>(
         matmul, matmul.getResult().getType(), rmsnorm.getInput(),
         rmsnorm.getGamma(), matmul.getRhs(), rmsnorm.getEpsilonAttr());
+
+    // This fusion removes exactly one intermediate (the normalized rmsnorm
+    // output); record the count and its byte size on the fused op.
+    fused->setAttr("tensixflow.eliminated_tensors",
+                   rewriter.getI64IntegerAttr(1));
+    fused->setAttr("tensixflow.eliminated_bytes",
+                   rewriter.getI64IntegerAttr(eliminatedBytes));
 
     // The rmsnorm result no longer has any use (the matmul was its only one),
     // so the rmsnorm is dead — drop it.
@@ -150,9 +174,21 @@ struct FuseMlpPattern : OpRewritePattern<TensixflowRmsnormOp> {
     // so passing it keeps the replacement type-correct; epsilon rides the
     // FloatAttr arg, exactly like FuseRmsnormMatmulPattern. Operand order matches
     // the fused_mlp def: input, gamma, w1, b1, w2, residual.
-    rewriter.replaceOpWithNewOp<TensixflowFusedMlpOp>(
+    // Sum the byte sizes of the five eliminated intermediates BEFORE erasing
+    // them: rmsnorm out (n), matmul1 out (m1), add1/bias out (b), gelu out (g),
+    // matmul2 out (m2).
+    int64_t eliminatedBytes = eliminatedBytesOf(n) + eliminatedBytesOf(m1) +
+                              eliminatedBytesOf(b) + eliminatedBytesOf(g) +
+                              eliminatedBytesOf(m2);
+    auto fused = rewriter.replaceOpWithNewOp<TensixflowFusedMlpOp>(
         add2, add2.getResult().getType(), rmsnorm.getInput(),
         rmsnorm.getGamma(), w1, b1, w2, residual, rmsnorm.getEpsilonAttr());
+
+    // This fusion removes five intermediates; record the count and total bytes.
+    fused->setAttr("tensixflow.eliminated_tensors",
+                   rewriter.getI64IntegerAttr(5));
+    fused->setAttr("tensixflow.eliminated_bytes",
+                   rewriter.getI64IntegerAttr(eliminatedBytes));
 
     // Erase the now-dead intermediates, consumers before producers (each is
     // dead once its single consumer above is gone).
@@ -172,6 +208,7 @@ public:
   using Base::Base;
 
   void runOnOperation() final {
+    ModuleOp module = getOperation();
     RewritePatternSet patterns(&getContext());
     // Higher benefit fires first: the full MLP chain collapses to fused_mlp
     // before the rmsnorm+matmul pattern can grab the chain head. A plain
@@ -179,8 +216,21 @@ public:
     // falls through to FuseRmsnormMatmulPattern.
     patterns.add<FuseMlpPattern>(&getContext(), /*benefit=*/2);
     patterns.add<FuseRmsnormMatmulPattern>(&getContext(), /*benefit=*/1);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+    if (failed(applyPatternsGreedily(module, std::move(patterns))))
       signalPassFailure();
+
+    // Count the fused ops the greedy rewrite produced and record the total as a
+    // module-level fusion report counter. Counting AFTER the rewrite (rather
+    // than bumping an attr from inside a pattern) keeps the patterns pure and
+    // makes the counter correct even if a fused op already existed on input.
+    int64_t fusions = 0;
+    module.walk([&](Operation *op) {
+      if (isa<TensixflowFusedRmsnormMatmulOp, TensixflowFusedMlpOp>(op))
+        ++fusions;
+    });
+    OpBuilder builder(module.getBodyRegion());
+    module->setAttr("tensixflow.fusion_report",
+                    builder.getI64IntegerAttr(fusions));
   }
 };
 

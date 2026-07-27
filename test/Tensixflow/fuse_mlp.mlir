@@ -21,7 +21,7 @@
 
 // CHECK-LABEL: tensixflow.func @full_chain
 // CHECK-SAME: (%[[X:[a-z0-9]+]]: tensor<1x2048x4096xbf16>, %[[GAMMA:[a-z0-9]+]]: tensor<4096xbf16>, %[[W1:[a-z0-9]+]]: tensor<4096x12288xbf16>, %[[B1:[a-z0-9]+]]: tensor<1x2048x12288xbf16>, %[[W2:[a-z0-9]+]]: tensor<12288x4096xbf16>, %[[RES:[a-z0-9]+]]: tensor<1x2048x4096xbf16>) -> tensor<1x2048x4096xbf16>
-// CHECK: %[[R:[a-z0-9]+]] = tensixflow.fused_mlp %[[X]], %[[GAMMA]], %[[W1]], %[[B1]], %[[W2]], %[[RES]] : tensor<1x2048x4096xbf16>, tensor<4096xbf16>, tensor<4096x12288xbf16>, tensor<1x2048x12288xbf16>, tensor<12288x4096xbf16>, tensor<1x2048x4096xbf16> -> tensor<1x2048x4096xbf16>
+// CHECK: %[[R:[a-z0-9]+]] = tensixflow.fused_mlp %[[X]], %[[GAMMA]], %[[W1]], %[[B1]], %[[W2]], %[[RES]] {tensixflow.eliminated_bytes = 184549376 : i64, tensixflow.eliminated_tensors = 5 : i64} : tensor<1x2048x4096xbf16>, tensor<4096xbf16>, tensor<4096x12288xbf16>, tensor<1x2048x12288xbf16>, tensor<12288x4096xbf16>, tensor<1x2048x4096xbf16> -> tensor<1x2048x4096xbf16>
 // CHECK-NOT: tensixflow.rmsnorm
 // CHECK-NOT: tensixflow.matmul
 // CHECK-NOT: tensixflow.gelu
