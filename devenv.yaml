@@ -1,3 +1,6 @@
 inputs:
   nixpkgs:
-    url: github:NixOS/nixpkgs/nixos-unstable
+    # Pinned to match flake.lock (LLVM/MLIR 20.1.8): nixos-unstable HEAD's mlir is uncached
+    # and source-broken. The rev MUST be pinned here, not only in devenv.lock — with a floating
+    # branch URL, `devenv shell` re-resolves the lock to the broken HEAD. Do not revert to nixos-unstable.
+    url: github:NixOS/nixpkgs/bd3c09ca2a2858daa15f26eb557faa4709635a41
