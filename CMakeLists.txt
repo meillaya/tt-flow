@@ -24,3 +24,5 @@ add_executable(mlir-tblgen IMPORTED GLOBAL)
 set_target_properties(mlir-tblgen PROPERTIES IMPORTED_LOCATION "${MLIR_TABLEGEN_EXE}")
 
 option(TENSIXFLOW_ENABLE_RUNTIME_STUBS "Generate compile-only stub tt-metal headers for codegen checks" ON)
+
+add_subdirectory(tools/tensixflow-opt)
