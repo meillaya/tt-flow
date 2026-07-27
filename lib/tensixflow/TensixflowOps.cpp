@@ -326,8 +326,12 @@ LogicalResult TensixflowFusedMlpOp::verify() {
   if (w2Type.getRank() < 2)
     return emitOpError("expected w2 to have rank >= 2, got ")
            << w2Type.getRank();
-  if (b1Type.getRank() != 1)
-    return emitOpError("b1 must be a 1-D tensor, got rank ")
+  // The bias may be a 1-D [H] vector (direct construction) or a full-rank
+  // [..., H] tensor (the shape a fused tensixflow.add bias materializes, since
+  // add requires identical operand types). Either way its last dimension is the
+  // hidden dim H, checked below.
+  if (b1Type.getRank() < 1)
+    return emitOpError("b1 must have rank >= 1, got rank ")
            << b1Type.getRank();
 
   Type inputElt = inputType.getElementType();
@@ -370,8 +374,9 @@ LogicalResult TensixflowFusedMlpOp::verify() {
     return emitOpError("mismatched contracting dimensions for w2: w1 hidden = ")
            << w1H << " but w2 K = " << w2K;
 
-  // Bias broadcasts over the hidden dim H.
-  int64_t b1Size = b1Type.getShape()[0];
+  // Bias broadcasts over the hidden dim H: the bias size is its LAST dimension
+  // (== H for both a 1-D [H] bias and a full-rank [..., H] bias).
+  int64_t b1Size = b1Type.getShape()[b1Type.getRank() - 1];
   if (!ShapedType::isDynamic(w1H) && !ShapedType::isDynamic(b1Size) &&
       b1Size != w1H)
     return emitOpError("b1 size (")
