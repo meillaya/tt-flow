@@ -23,6 +23,9 @@ def Tensixflow_Dialect : Dialect {
     circular-buffered reader/compute/writer kernels.
   }];
   let cppNamespace = "::mlir::tensixflow";
+  // Route `#tensixflow.<attr>` parsing/printing through the tablegen-generated
+  // attribute dispatcher (required for TensixflowTileLayoutAttr to round-trip).
+  let useDefaultAttributePrinterParser = 1;
 }
 
 #endif // TENSIXFLOW_DIALECT
