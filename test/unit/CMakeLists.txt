@@ -19,3 +19,16 @@ target_compile_definitions(PlanSchemaTest PRIVATE
 )
 
 add_test(NAME plan_schema COMMAND PlanSchemaTest)
+
+# Scheduler data-model test (todo 25). Links the scheduler model + the reused
+# schema lib; no MLIR dialect dependency.
+add_executable(SchedulerModelTest SchedulerModelTest.cpp)
+target_link_libraries(SchedulerModelTest PRIVATE
+  MLIRTensixflowScheduler
+  MLIRTensixflowSchema
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME scheduler_model COMMAND SchedulerModelTest)

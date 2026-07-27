@@ -25,3 +25,7 @@ add_mlir_dialect_library(MLIRTensixflow
 # Plan/perf/viz schema library (D15). Own subdirectory because LLVM enforces one
 # build target per directory; see Schema/CMakeLists.txt.
 add_subdirectory(Schema)
+
+# Scheduler data-model library (todo 25). Own subdirectory for the same reason;
+# see Scheduler/CMakeLists.txt.
+add_subdirectory(Scheduler)
