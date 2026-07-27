@@ -1,0 +1,45 @@
+# TensixFlow CI — CPU-only.
+#
+# Builds the compiler and runs every test stage on a plain CPU runner.
+# No Tenstorrent device, accelerator hardware, or cloud spend is required.
+# The opt-in bring-up helper documented under docs/ is NOT invoked here.
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          # Flakes are enabled by default in modern nix; stated explicitly so
+          # the pinned flake/devenv resolves deterministically.
+          extra_nix_config: "experimental-features = nix-command flakes"
+
+      - name: Configure and build
+        # Under nix, bin/lit is a bash wrapper; LLVM's add_lit_target spawns lit
+        # as "python3 <lit>", so LLVM_EXTERNAL_LIT must point at the real python
+        # script ".lit-wrapped" (a plain $(which lit) breaks lit). See learnings.
+        run: |
+          nix develop --command bash -c 'cmake -G Ninja -B build -DMLIR_DIR=$MLIR_DIR -DLLVM_DIR=$LLVM_DIR -DLLVM_EXTERNAL_LIT="$(dirname "$(which lit)")/.lit-wrapped" && cmake --build build'
+
+      - name: lit/FileCheck regression tests
+        run: |
+          nix develop --command bash -c 'cmake --build build --target check-tensixflow'
+
+      - name: ctest (C++ unit tests)
+        # The gtest suites are added in later waves, so --no-tests=ignore keeps
+        # this step green until then.
+        run: |
+          nix develop --command bash -c 'ctest --output-on-failure --test-dir build --no-tests=ignore'
+
+      - name: pytest (Python golden/harness/DSL)
+        # pytest exit 5 == "no tests ran" (the python suites land in later
+        # waves), so this stays green until then.
+        run: |
+          nix develop --command bash -c 'python3 -m pytest python/ -q || test $? -eq 5'
