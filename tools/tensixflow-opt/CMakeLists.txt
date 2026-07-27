@@ -23,6 +23,7 @@ llvm_update_compile_flags(tensixflow-opt)
 target_link_libraries(tensixflow-opt PRIVATE
   ${dialect_libs}
   ${extension_libs}
+  MLIRTensixflow
   MLIRIR
   MLIRPass
   MLIRParser

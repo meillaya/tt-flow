@@ -25,6 +25,18 @@ set_target_properties(mlir-tblgen PROPERTIES IMPORTED_LOCATION "${MLIR_TABLEGEN_
 
 option(TENSIXFLOW_ENABLE_RUNTIME_STUBS "Generate compile-only stub tt-metal headers for codegen checks" ON)
 
+# Mirror mlir/examples/standalone: LLVM/MLIR include dirs (tablegen reads the
+# directory INCLUDE_DIRECTORIES property to build its -I flags, so these are
+# required for mlir-tblgen to find mlir/IR/OpBase.td), plus the project include
+# dir so #include "tensixflow/..." resolves in both C++ and tablegen.
+include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(${MLIR_INCLUDE_DIRS})
+include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(${PROJECT_BINARY_DIR}/include)
+
+add_subdirectory(include/tensixflow)
+add_subdirectory(lib/tensixflow)
+
 add_subdirectory(tools/tensixflow-opt)
 
 # lit/FileCheck regression suite (defines the check-tensixflow target). Must come
