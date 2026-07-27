@@ -127,5 +127,63 @@ LogicalResult TensixflowMatmulOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// TensixflowRmsnormOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult TensixflowRmsnormOp::inferReturnTypeComponents(
+    MLIRContext *context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes,
+    OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) {
+  ShapeAdaptor inputShape = operands.getShape(0);
+
+  if (!inputShape.hasRank())
+    return emitOptionalError(location,
+                             "expected a ranked tensor for rmsnorm input");
+
+  if (inputShape.getRank() < 1)
+    return emitOptionalError(location,
+                             "expected rmsnorm input to have rank >= 1, got ",
+                             inputShape.getRank());
+
+  // RMSNorm normalizes over the last dimension; the result has the same shape
+  // and element type as the input.
+  SmallVector<int64_t> resultShape;
+  inputShape.getDims(resultShape);
+  inferredReturnShapes.emplace_back(resultShape, inputShape.getElementType());
+  return success();
+}
+
+LogicalResult TensixflowRmsnormOp::verify() {
+  auto inputType = cast<RankedTensorType>(getInput().getType());
+  auto gammaType = cast<RankedTensorType>(getGamma().getType());
+
+  if (inputType.getRank() < 1)
+    return emitOpError("expected input to have rank >= 1, got ")
+           << inputType.getRank();
+
+  if (gammaType.getRank() != 1)
+    return emitOpError("gamma must be a 1-D tensor, got rank ")
+           << gammaType.getRank();
+
+  if (inputType.getElementType() != gammaType.getElementType())
+    return emitOpError("expected input and gamma element types to match, got ")
+           << inputType.getElementType() << " and "
+           << gammaType.getElementType();
+
+  // Gamma size must equal the input's last dimension. Only check when both are
+  // static.
+  int64_t inputLastDim = inputType.getShape()[inputType.getRank() - 1];
+  int64_t gammaSize = gammaType.getShape()[0];
+  if (!ShapedType::isDynamic(inputLastDim) &&
+      !ShapedType::isDynamic(gammaSize) && gammaSize != inputLastDim)
+    return emitOpError("gamma size (")
+           << gammaSize << ") must match the input's last dimension ("
+           << inputLastDim << ")";
+
+  return success();
+}
+
 #define GET_OP_CLASSES
 #include "tensixflow/TensixflowOps.cpp.inc"

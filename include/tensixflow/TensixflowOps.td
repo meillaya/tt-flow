@@ -198,4 +198,27 @@ def TensixflowMatmulOp : Tensixflow_Op<"matmul", [
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// TensixflowRmsnormOp
+//===----------------------------------------------------------------------===//
+
+def TensixflowRmsnormOp : Tensixflow_Op<"rmsnorm", [
+    Pure,
+    DeclareOpInterfaceMethods<InferShapedTypeOpInterface,
+                              ["inferReturnTypeComponents"]>]> {
+  let summary = "RMS normalization operation";
+  let description = [{
+    The `tensixflow.rmsnorm` operation normalizes `input` over its last
+    dimension (RMSNorm): `y = input * rsqrt(mean(input^2, last_dim) + epsilon) * gamma`.
+    `gamma` is a 1-D tensor whose size equals the last dimension of `input`.
+    The result has the SAME shape as `input`.
+  }];
+  let arguments = (ins AnyRankedTensor:$input,
+                       AnyRankedTensor:$gamma,
+                       DefaultValuedAttr<F32Attr, "1.0e-6">:$epsilon);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$input `,` $gamma attr-dict `:` type($input) `,` type($gamma) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 #endif // TENSIXFLOW_OPS
