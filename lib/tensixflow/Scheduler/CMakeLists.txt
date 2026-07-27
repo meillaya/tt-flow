@@ -12,6 +12,7 @@ add_library(MLIRTensixflowScheduler STATIC
   Model.cpp
   GridPlanner.cpp
   WeightPlanner.cpp
+  CBAllocator.cpp
 )
 # Expose this directory so consumers can #include "Model.h" / "L1Model.h" etc.
 target_include_directories(MLIRTensixflowScheduler PUBLIC

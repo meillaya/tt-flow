@@ -57,3 +57,15 @@ target_link_libraries(WeightPlannerTest PRIVATE
 )
 
 add_test(NAME weight_planner COMMAND WeightPlannerTest)
+
+# Circular-buffer allocator test (todo 28). Links the scheduler lib (which carries
+# the shared L1-budget constants + CBAllocator and reuses the schema lib PUBLIC).
+add_executable(CBAllocatorTest CBAllocatorTest.cpp)
+target_link_libraries(CBAllocatorTest PRIVATE
+  MLIRTensixflowScheduler
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME cb_allocator COMMAND CBAllocatorTest)
