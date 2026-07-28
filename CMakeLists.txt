@@ -49,3 +49,7 @@ add_subdirectory(test)
 # registers the add_test() entries with ctest (e.g. `ctest -R plan_schema`).
 enable_testing()
 add_subdirectory(test/unit)
+
+# Compile-only structural check of TT-Metalium kernels against signature-only
+# stub headers (defines the check-generated-kernels-compile target; todo 33/D16).
+add_subdirectory(kernels)
