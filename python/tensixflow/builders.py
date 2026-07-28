@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import NoReturn
 
 __all__ = [
     "BuilderError",
@@ -119,6 +120,22 @@ class FuncBuilder:
     def name(self) -> str:
         """The function's symbol name (``@<name>``)."""
         return self._name
+
+    def __getattr__(self, name: str) -> NoReturn:
+        """Clear "no builder" error for an unsupported op (todo 48 failure path).
+
+        Called ONLY when normal lookup fails (real builders + attrs are found the
+        usual way), so a jitted kernel that calls a non-existent builder method
+        (``b.softmax(x)``) gets a precise :class:`BuilderError` naming the op and
+        the supported set, instead of a bare ``AttributeError``. Raising the DSL's
+        typed error (not ``AttributeError``) makes the failure path catchable as
+        ``BuilderError``; the dialect verifiers remain the authority on SEMANTIC
+        errors (e.g. a matmul K mismatch) at parse/verify time.
+        """
+        raise BuilderError(
+            f"no builder for op {name!r}; supported ops: "
+            "rmsnorm, matmul, gelu, add, residual"
+        )
 
     # --- arguments ---------------------------------------------------------
 

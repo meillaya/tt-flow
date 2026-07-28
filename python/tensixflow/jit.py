@@ -1,22 +1,28 @@
-"""TensixFlow ``@jit`` decorator scaffold (Stretch A; draft D21 thin builder).
+"""TensixFlow ``@jit`` decorator (Stretch A; draft D21 thin builder).
 
-D21 GUARDRAIL: this is a THIN BUILDER scaffold, NOT a tracing JIT and NOT an
-AST compiler. ``jit`` CAPTURES the user's kernel function and nothing more: it
-does not inspect, parse, trace, or execute the function body at decoration
-time. The explicit builder calls that emit ``tensixflow`` MLIR text land in
-todo 47; the lowering driver that invokes the ``tensixflow-opt`` pipeline
-lands in todo 48.
+D21 GUARDRAIL: this is a THIN BUILDER, NOT a tracing JIT and NOT an AST
+compiler. ``jit`` CAPTURES the user's kernel function and nothing more: it does
+not inspect, parse, trace, or execute the function body at decoration time. The
+kernel makes EXPLICIT builder calls (todo 47); on a call with real NumPy arrays
+the lowering driver (todo 48, :mod:`tensixflow.lowering`) builds the
+``tensixflow`` MLIR text from those calls, runs the ``tensixflow-opt`` pipeline +
+the C++ simulator, and returns a :class:`tensixflow.lowering.LoweredResult`.
 
-Until lowering exists, a decorated kernel falls back to EAGER execution:
-calling it runs the captured Python function directly, so decorated kernels
-stay runnable during bring-up.
+A call that is NOT positional NumPy arrays (scalars, mixed args, kwargs) keeps
+the EAGER fallback: it runs the captured Python function directly, so decorated
+kernels stay runnable during bring-up.
 """
 
 from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Generic, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Generic, ParamSpec, TypeVar
+
+if TYPE_CHECKING:
+    # Typing-only (never imported at runtime, so no __init__ -> jit -> lowering
+    # cycle): names the lowering driver's result for the union return type below.
+    from tensixflow.lowering import LoweredResult
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -42,11 +48,16 @@ class JitTypeError(TypeError):
 class JitFunction(Generic[_P, _R]):
     """A kernel captured by ``@tensixflow.jit``.
 
-    Holds the user function for later MLIR emission (todo 47/48). The instance
-    is immutable after construction; ``functools.update_wrapper`` copies the
-    wrapped function's ``__name__``/``__doc__``/``__wrapped__`` metadata onto it
-    so the decorated object still reads like the original kernel. Calling it
-    runs the captured function eagerly (the pre-lowering fallback).
+    Holds the user function for MLIR emission (todo 47/48). The instance is
+    immutable after construction; ``functools.update_wrapper`` copies the wrapped
+    function's ``__name__``/``__doc__``/``__wrapped__`` metadata onto it so the
+    decorated object still reads like the original kernel.
+
+    Calling it with positional NumPy arrays LOWERS the kernel (todo 48): the driver
+    builds the MLIR text from the function's explicit builder calls, runs the
+    ``tensixflow-opt`` pipeline + the C++ simulator, and returns a
+    :class:`tensixflow.lowering.LoweredResult` (plan JSON + result array). Any other
+    call runs the captured function eagerly (the bring-up fallback).
     """
 
     def __init__(self, fn: Callable[_P, _R]) -> None:
@@ -60,9 +71,19 @@ class JitFunction(Generic[_P, _R]):
         """The captured kernel function."""
         return self._fn
 
-    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        # Scaffold only: no lowering yet (todo 47 emits MLIR, todo 48 drives the
-        # pipeline). The eager fallback keeps the decorated kernel runnable.
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R | LoweredResult:
+        # Dispatch (todo 48): positional NumPy arrays LOWER the kernel (build MLIR
+        # from its builder calls, drive the tensixflow-opt pipeline + simulator,
+        # return a LoweredResult); any other call keeps the eager fallback (returns
+        # the captured function's own result _R) so decorated kernels stay runnable
+        # during bring-up. lowering is imported LAZILY (it pulls in the harness/golden
+        # stack): a module-level import here would create an
+        # __init__ -> jit -> lowering -> harness -> __init__ cycle, so it loads on
+        # first call, when the package is fully initialized.
+        from tensixflow import lowering
+
+        if lowering.should_lower(args, kwargs):
+            return lowering.lower_and_run(self._fn, args)
         return self._fn(*args, **kwargs)
 
 
