@@ -1,0 +1,82 @@
+{
+  "activation_sharding": "row-major",
+  "cb_specs": [
+    {
+      "depth": 160,
+      "index": 0,
+      "tile_bytes": 2048
+    },
+    {
+      "depth": 160,
+      "index": 1,
+      "tile_bytes": 2048
+    },
+    {
+      "depth": 160,
+      "index": 16,
+      "tile_bytes": 2048
+    }
+  ],
+  "estimated_dram_reads_saved": 16777216,
+  "estimated_intermediate_writes_saved": 16777216,
+  "fusion": "fused_rmsnorm_matmul",
+  "graph_id": "rmsnorm_matmul",
+  "intermediate_storage": "L1",
+  "layout": {
+    "activation_sharding": "row-major",
+    "weight_strategy": "multicast"
+  },
+  "noc": {
+    "dram_read_bytes": 117440512,
+    "dram_write_bytes": 50331648,
+    "l1_bytes": 16777216,
+    "multicast_bytes": 100663296
+  },
+  "perf": {
+    "bottleneck": "memory",
+    "compute_util": 0,
+    "est_cycles": 0,
+    "suggestions": []
+  },
+  "shard_grid": {
+    "grid_x": 8,
+    "grid_y": 8
+  },
+  "tensors": [
+    {
+      "dtype": "bf16",
+      "name": "arg0",
+      "placement": "DRAM",
+      "shape": [
+        1,
+        2048,
+        4096
+      ]
+    },
+    {
+      "dtype": "bf16",
+      "name": "arg1",
+      "placement": "DRAM",
+      "shape": [
+        4096
+      ]
+    },
+    {
+      "dtype": "bf16",
+      "name": "arg2",
+      "placement": "DRAM",
+      "shape": [
+        4096,
+        12288
+      ]
+    }
+  ],
+  "viz": {
+    "cb_usage": "",
+    "core_grid": "",
+    "noc_routes": "",
+    "shards": "",
+    "timeline": ""
+  },
+  "weight_strategy": "multicast"
+}
