@@ -42,6 +42,11 @@ add_subdirectory(tools/tensixflow-translate)
 add_subdirectory(tools/tensixflow-simulate)
 add_subdirectory(tools/tensixflow-report)
 
+# Simple benchmark timing loops + the report-regeneration target (todo 44, D21).
+# Must come after tools/ so the tensixflow-report target the regenerate target
+# DEPENDS on already exists.
+add_subdirectory(benchmarks)
+
 # lit/FileCheck regression suite (defines the check-tensixflow target). Must come
 # after tools/ so the tensixflow-opt target it DEPENDS on already exists.
 add_subdirectory(test)
