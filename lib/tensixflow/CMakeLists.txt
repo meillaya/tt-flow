@@ -8,6 +8,8 @@ add_mlir_dialect_library(MLIRTensixflow
   PlanNocShardingPass.cpp
   AllocateCircularBuffersPass.cpp
   LowerToTTKernelPass.cpp
+  EmitMetaliumPass.cpp
+  Codegen/EmitHost.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/tensixflow

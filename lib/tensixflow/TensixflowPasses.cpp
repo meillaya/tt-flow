@@ -12,10 +12,10 @@
 //
 // CanonicalizePass has a real body below (it applies the dialect's
 // canonicalization patterns via the greedy rewrite driver). InferTileLayoutPass,
-// FuseRmsnormMatmulPass, PlanNocShardingPass, and AllocateCircularBuffersPass
-// have real bodies in their own .cpp files (their GEN_PASS_DEF_* + classes live
-// there), so they are intentionally absent here to keep exactly one definition
-// of each pass and its createXxx().
+// FuseRmsnormMatmulPass, PlanNocShardingPass, AllocateCircularBuffersPass,
+// LowerToTTKernelPass, and EmitMetaliumPass have real bodies in their own .cpp
+// files (their GEN_PASS_DEF_* + classes live there), so they are intentionally
+// absent here to keep exactly one definition of each pass and its createXxx().
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,28 +33,12 @@ namespace tensixflow {
 // this TU. InferTileLayoutPass's GEN_PASS_DEF lives in InferTileLayoutPass.cpp,
 // FuseRmsnormMatmulPass's in FuseRmsnormMatmulPass.cpp, PlanNocShardingPass's in
 // PlanNocShardingPass.cpp, AllocateCircularBuffersPass's in
-// AllocateCircularBuffersPass.cpp, and LowerToTTKernelPass's in
-// LowerToTTKernelPass.cpp.
+// AllocateCircularBuffersPass.cpp, LowerToTTKernelPass's in
+// LowerToTTKernelPass.cpp, and EmitMetaliumPass's in EmitMetaliumPass.cpp.
 #define GEN_PASS_DEF_CANONICALIZEPASS
-#define GEN_PASS_DEF_EMITMETALIUMPASS
 #include "tensixflow/TensixflowPasses.h.inc"
 
 namespace {
-
-// One no-op stub per pass that has no real body yet. The generated friend
-// impl::createXxx() instantiates std::make_unique<DerivedT>() lazily, so each
-// stub only needs the inherited base constructors and an empty runOnOperation().
-#define TENSIXFLOW_STUB_PASS(Name)                                             \
-  class Name final : public impl::Name##Base<Name> {                           \
-  public:                                                                      \
-    using Base = impl::Name##Base<Name>;                                       \
-    using Base::Base;                                                          \
-    void runOnOperation() final {}                                             \
-  };
-
-TENSIXFLOW_STUB_PASS(EmitMetaliumPass)
-
-#undef TENSIXFLOW_STUB_PASS
 
 // Real body for --tensixflow-canonicalize. Applies the dialect's
 // canonicalization patterns (the same ones the standard --canonicalize pass
