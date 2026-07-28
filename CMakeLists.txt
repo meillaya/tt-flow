@@ -39,6 +39,7 @@ add_subdirectory(lib/tensixflow)
 
 add_subdirectory(tools/tensixflow-opt)
 add_subdirectory(tools/tensixflow-translate)
+add_subdirectory(tools/tensixflow-simulate)
 
 # lit/FileCheck regression suite (defines the check-tensixflow target). Must come
 # after tools/ so the tensixflow-opt target it DEPENDS on already exists.
