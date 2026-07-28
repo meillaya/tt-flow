@@ -132,3 +132,19 @@ target_link_libraries(TileSimulatorTest PRIVATE
 )
 
 add_test(NAME tile_simulator COMMAND TileSimulatorTest)
+
+# Static performance-model test (todo 42). Links the Analysis lib (which carries
+# estimatePerf/formatPerfReport and PUBLIC-links the scheduler lib — NoC estimator
+# + L1-budget constants + plan structs — and the schema lib for plan::toJson /
+# parsePlan). ctest name EXACTLY perf_model.
+add_executable(PerfModelTest PerfModelTest.cpp)
+target_link_libraries(PerfModelTest PRIVATE
+  MLIRTensixflowAnalysis
+  MLIRTensixflowScheduler
+  MLIRTensixflowSchema
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME perf_model COMMAND PerfModelTest)
