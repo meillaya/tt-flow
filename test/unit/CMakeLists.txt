@@ -94,3 +94,21 @@ target_link_libraries(PlanReportTest PRIVATE
 )
 
 add_test(NAME plan_report COMMAND PlanReportTest)
+
+# Rounding-contract test (todo 38, D14). Sim/Rounding.h is header-only, so the
+# test only needs the include path (no MLIR/LLVM link). It writes
+# ${CMAKE_BINARY_DIR}/rounding_consistency.txt for the Python bit-for-bit
+# consistency handshake (python/tensixflow/tests/test_rounding.py).
+add_executable(RoundingTest RoundingTest.cpp)
+target_include_directories(RoundingTest PRIVATE
+  ${PROJECT_SOURCE_DIR}/lib/tensixflow/Sim
+)
+target_compile_definitions(RoundingTest PRIVATE
+  TENSIXFLOW_ROUNDING_OUT_DIR="${CMAKE_BINARY_DIR}"
+)
+target_link_libraries(RoundingTest PRIVATE
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME rounding COMMAND RoundingTest)

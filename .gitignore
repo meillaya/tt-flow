@@ -8,3 +8,7 @@ result
 
 # devenv runtime state
 .devenv*
+
+# Python artifacts
+__pycache__/
+*.pyc
