@@ -7,6 +7,7 @@ add_mlir_dialect_library(MLIRTensixflow
   FuseRmsnormMatmulPass.cpp
   PlanNocShardingPass.cpp
   AllocateCircularBuffersPass.cpp
+  LowerToTTKernelPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/tensixflow

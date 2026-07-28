@@ -32,10 +32,10 @@ namespace tensixflow {
 // and the public createXxx() definitions for the passes whose bodies live in
 // this TU. InferTileLayoutPass's GEN_PASS_DEF lives in InferTileLayoutPass.cpp,
 // FuseRmsnormMatmulPass's in FuseRmsnormMatmulPass.cpp, PlanNocShardingPass's in
-// PlanNocShardingPass.cpp, and AllocateCircularBuffersPass's in
-// AllocateCircularBuffersPass.cpp.
+// PlanNocShardingPass.cpp, AllocateCircularBuffersPass's in
+// AllocateCircularBuffersPass.cpp, and LowerToTTKernelPass's in
+// LowerToTTKernelPass.cpp.
 #define GEN_PASS_DEF_CANONICALIZEPASS
-#define GEN_PASS_DEF_LOWERTOTTKERNELPASS
 #define GEN_PASS_DEF_EMITMETALIUMPASS
 #include "tensixflow/TensixflowPasses.h.inc"
 
@@ -52,7 +52,6 @@ namespace {
     void runOnOperation() final {}                                             \
   };
 
-TENSIXFLOW_STUB_PASS(LowerToTTKernelPass)
 TENSIXFLOW_STUB_PASS(EmitMetaliumPass)
 
 #undef TENSIXFLOW_STUB_PASS
