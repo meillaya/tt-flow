@@ -112,3 +112,23 @@ target_link_libraries(RoundingTest PRIVATE
 )
 
 add_test(NAME rounding COMMAND RoundingTest)
+
+# Functional tile simulator test (todo 39, D14). Links the Sim library (which walks
+# the schedule IR and PUBLIC-links MLIRTensixflow) plus the MLIR libs needed to parse
+# tiny funcs and run the plan -> allocate -> lower pipeline that builds the schedule
+# IR the simulator executes. ctest name EXACTLY tile_simulator.
+add_executable(TileSimulatorTest TileSimulatorTest.cpp)
+target_link_libraries(TileSimulatorTest PRIVATE
+  MLIRTensixflowSim
+  MLIRTensixflow
+  MLIRIR
+  MLIRParser
+  MLIRPass
+  MLIRFuncDialect
+  MLIRArithDialect
+  MLIRSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME tile_simulator COMMAND TileSimulatorTest)

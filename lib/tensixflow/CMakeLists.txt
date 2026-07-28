@@ -41,3 +41,7 @@ add_subdirectory(Schema)
 # Scheduler data-model library (todo 25). Own subdirectory for the same reason;
 # see Scheduler/CMakeLists.txt.
 add_subdirectory(Scheduler)
+
+# Functional tile simulator library (todo 39, D14). Own subdirectory for the same
+# reason; see Sim/CMakeLists.txt. Links MLIRTensixflow (it walks the schedule IR).
+add_subdirectory(Sim)
