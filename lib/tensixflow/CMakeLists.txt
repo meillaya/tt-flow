@@ -13,6 +13,7 @@ add_mlir_dialect_library(MLIRTensixflow
   Codegen/EmitCompute.cpp
   Codegen/EmitReader.cpp
   Codegen/EmitWriter.cpp
+  Codegen/EmitProject.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/tensixflow

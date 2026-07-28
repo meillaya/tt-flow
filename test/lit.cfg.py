@@ -24,6 +24,9 @@ config.test_exec_root = os.path.join(config.tensixflow_obj_root, "test")
 
 config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
+# The C++ compiler for syntax-checking generated kernels against the stubs
+# (todo 37); absolute path from CMAKE_CXX_COMPILER, so no PATH dependence.
+config.substitutions.append(("%cxx", config.tensixflow_cxx))
 
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 

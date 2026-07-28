@@ -3,8 +3,7 @@
 #
 # Compile-only structural check for generated/baseline TT-Metalium kernels.
 #
-# Two assertions, BOTH required for success (this is what makes the check
-# non-vacuous):
+# Three assertions, ALL required for success (1+2 make the check non-vacuous):
 #
 #   1. POSITIVE: the current-API baseline kernel compiles `-fsyntax-only`
 #      against the signature-only stubs. If it does NOT compile, the stubs have
@@ -14,13 +13,19 @@
 #      MUST FAIL to compile, and the diagnostic MUST name EnqueueProgram. If it
 #      compiles, the stubs have drifted back to a legacy API -> FAIL.
 #
-# Usage: check_kernels_compile.sh <CXX> <STUBS_DIR> <BASELINE.cpp> <NEGATIVE.cpp>
+#   3. GENERATED (todo 37): EVERY .cpp under <GENERATED_DIR>/<op>/ (the
+#      standalone projects written by --tensixflow-emit-metalium=output-dir=)
+#      compiles `-fsyntax-only` against the stubs. Any failure -> FAIL. An
+#      empty/absent generated dir is a note, not a failure.
+#
+# Usage: check_kernels_compile.sh <CXX> <STUBS_DIR> <BASELINE.cpp> <NEGATIVE.cpp> <GENERATED_DIR>
 set -u
 
 cxx="$1"
 stubs="$2"
 baseline="$3"
 negative="$4"
+generated="$5"
 
 flags=(-std=c++20 -fsyntax-only -Wall -I "$stubs")
 
@@ -55,4 +60,28 @@ if ! printf '%s' "$neg_err" | grep -q "EnqueueProgram"; then
 fi
 
 echo "[negative] OK: legacy kernel rejected (EnqueueProgram undeclared), exit=$neg_status."
-echo "[check-generated-kernels-compile] PASS: current API compiles AND legacy API is rejected."
+
+# --- 3. GENERATED: every generated/<op>/*.cpp must compile ------------------
+if [ -d "$generated" ]; then
+    shopt -s nullglob
+    gen_count=0
+    for proj in "$generated"/*/; do
+        for src in "$proj"*.cpp; do
+            echo "[generated] compiling ${src#"$generated"/} (must SUCCEED)..."
+            if ! "$cxx" "${flags[@]}" "$src"; then
+                echo "FAIL: generated kernel $src did NOT compile against the stubs." >&2
+                exit 1
+            fi
+            gen_count=$((gen_count + 1))
+        done
+    done
+    if [ "$gen_count" -eq 0 ]; then
+        echo "[generated] note: no generated kernels under $generated (nothing to compile)."
+    else
+        echo "[generated] OK: $gen_count generated kernel file(s) compiled -fsyntax-only."
+    fi
+else
+    echo "[generated] note: $generated does not exist (nothing to compile)."
+fi
+
+echo "[check-generated-kernels-compile] PASS: current API compiles, legacy API is rejected, generated kernels compile."

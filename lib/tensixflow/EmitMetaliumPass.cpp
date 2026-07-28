@@ -14,8 +14,14 @@
 // delimiter banners (lib/tensixflow/Codegen/).
 //
 // As of todo 36 the pass emits ALL FOUR artifacts (host + compute + reader +
-// writer); todo 37 writes the full project tree to disk (splitting stdout on
-// the delimiter banners).
+// writer). Todo 37 adds the project assembler: with the `output-dir` option
+// set (CLI: --tensixflow-emit-metalium=output-dir=<dir>), the pass writes a
+// complete standalone project tree to that directory instead of stdout --
+// host.cpp / reader.cpp / compute.cpp / writer.cpp (each emitter to its OWN
+// file, no banners) plus a compile-only CMakeLists.txt and a README.md (see
+// lib/tensixflow/Codegen/EmitProject.cpp). Input validation runs before ANY
+// output in both modes, so a failure never leaves a half-written tree. With
+// the option unset, the stdout + delimiter-banner behavior is unchanged.
 //
 // Ordering note: compute.cpp is emitted BETWEEN host.cpp and the dataflow
 // kernels (not after writer.cpp). host.cpp stays the prefix before the first
@@ -35,6 +41,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "tensixflow/Codegen/EmitCompute.h"
 #include "tensixflow/Codegen/EmitHost.h"
+#include "tensixflow/Codegen/EmitProject.h"
 #include "tensixflow/Codegen/EmitReader.h"
 #include "tensixflow/Codegen/EmitWriter.h"
 #include "tensixflow/TensixflowAttrs.h"
@@ -88,12 +95,28 @@ public:
       return;
     }
 
-    // Emit the four artifacts to stdout, each preceded by a file-delimiter
-    // banner (a valid C++ comment line, so an extracted artifact compiles
-    // whether the banner is kept or stripped). host.cpp is the prefix before the
-    // first banner; compute.cpp / reader.cpp / writer.cpp follow their banners.
-    // Compute precedes the dataflow kernels (see the ordering note in this
-    // file's header). Todo 37's file-writer splits on these banners.
+    // File mode (todo 37): assemble the complete standalone project tree under
+    // outputDir. Validation already passed above and emitProject renders every
+    // artifact to memory before the first filesystem touch, so nothing here can
+    // leave a half-written tree. Like stdout mode this is a terminal emission:
+    // exit 0 once the tree is written so mlir-opt does not append the module IR
+    // (stdout stays empty; the artifacts live in the files).
+    if (!outputDir.empty()) {
+      std::string error;
+      if (failed(emitProject(kernel, schedule, outputDir, error))) {
+        module.emitError("failed to write the Metalium project: ") << error;
+        signalPassFailure();
+        return;
+      }
+      std::exit(0);
+    }
+
+    // Stdout mode (default): emit the four artifacts to stdout, each preceded
+    // by a file-delimiter banner (a valid C++ comment line, so an extracted
+    // artifact compiles whether the banner is kept or stripped). host.cpp is the
+    // prefix before the first banner; compute.cpp / reader.cpp / writer.cpp
+    // follow their banners. Compute precedes the dataflow kernels (see the
+    // ordering note in this file's header).
     emitHost(kernel, schedule, llvm::outs());
     llvm::outs() << "\n// ===== file: compute.cpp =====\n";
     emitCompute(kernel, schedule, llvm::outs());

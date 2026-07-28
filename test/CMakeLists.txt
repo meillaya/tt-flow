@@ -18,6 +18,10 @@ set(TENSIXFLOW_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(TENSIXFLOW_BINARY_DIR ${PROJECT_BINARY_DIR})
 set(TENSIXFLOW_TOOLS_DIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_TOOLS_DIR ${LLVM_TOOLS_BINARY_DIR})
+# The C++ compiler lit tests use to syntax-check generated kernels against the
+# stubs (todo 37) -- the same compiler the check-generated-kernels-compile
+# target uses, so the lit compile step is hermetic (no PATH dependence).
+set(TENSIXFLOW_CXX ${CMAKE_CXX_COMPILER})
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in

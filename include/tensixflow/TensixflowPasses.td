@@ -82,8 +82,24 @@ def EmitMetaliumPass : TensixflowPass<"tensixflow-emit-metalium",
     "Emit TT-Metalium-style reader/compute/writer kernels"> {
   let description = [{
     Emits TT-Metalium-style host/reader/compute/writer kernel sources from
-    the schedule IR. Stub: no-op until a later todo.
+    the schedule IR. By default the four artifacts print to stdout separated
+    by `// ===== file: <name>.cpp =====` delimiter banners. With `output-dir`
+    set (todo 37), the pass instead writes a complete standalone project
+    tree to that directory: host.cpp, reader.cpp, compute.cpp, writer.cpp,
+    a compile-only CMakeLists.txt (syntax-checked against the signature-only
+    tt-metal stubs; no link, no device) and a README.md.
+
+    MLIR 20.1.8 pass-option CLI form (verified): the option is attached to
+    the pass flag as `--tensixflow-emit-metalium=output-dir=<dir>` (a bare
+    `-o <dir>` is NOT possible — mlir-opt owns the global `-o` output-file
+    flag, and pass options parse only as `--<pass>=<option>=<value>` or via
+    the pipeline syntax `builtin.module(tensixflow-emit-metalium{output-dir=
+    <dir>})`).
   }];
+  let options = [
+    Option<"outputDir", "output-dir", "std::string", /*default=*/"\"\"",
+           "Write a complete standalone project tree (host/reader/compute/writer.cpp + CMakeLists.txt + README.md) to this directory instead of stdout">
+  ];
 }
 
 #endif // TENSIXFLOW_PASSES_TD
