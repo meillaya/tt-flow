@@ -10,6 +10,7 @@ add_mlir_dialect_library(MLIRTensixflow
   LowerToTTKernelPass.cpp
   EmitMetaliumPass.cpp
   Codegen/EmitHost.cpp
+  Codegen/EmitCompute.cpp
   Codegen/EmitReader.cpp
   Codegen/EmitWriter.cpp
 

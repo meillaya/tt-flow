@@ -8,13 +8,21 @@
 // The --tensixflow-emit-metalium pass: the Wave-6 codegen entry point. It reads
 // the tile-level schedule IR (the `tensixflow.sched.kernel` built by
 // --tensixflow-lower-to-ttkernel) AND the module-level #tensixflow.schedule plan
-// attribute, then emits the generated translation units to stdout: host.cpp
-// (emitHost), reader.cpp (emitReader) and writer.cpp (emitWriter), separated by
-// `// ===== file: <name>.cpp =====` delimiter banners (lib/tensixflow/Codegen/).
+// attribute, then emits the four generated translation units to stdout:
+// host.cpp (emitHost), compute.cpp (emitCompute), reader.cpp (emitReader) and
+// writer.cpp (emitWriter), separated by `// ===== file: <name>.cpp =====`
+// delimiter banners (lib/tensixflow/Codegen/).
 //
-// This todo (35) emits HOST.CPP + READER.CPP + WRITER.CPP. Todo 36 extends this
-// same pass to also emit compute.cpp; todo 37 writes the full project tree to
-// disk (splitting stdout on the delimiter banners).
+// As of todo 36 the pass emits ALL FOUR artifacts (host + compute + reader +
+// writer); todo 37 writes the full project tree to disk (splitting stdout on
+// the delimiter banners).
+//
+// Ordering note: compute.cpp is emitted BETWEEN host.cpp and the dataflow
+// kernels (not after writer.cpp). host.cpp stays the prefix before the first
+// banner, and the todo-35 reader/writer FileCheck gates -- which assert no
+// compute math (matmul_tiles) from the reader banner to end of output -- stay
+// valid unmodified, since the compute kernel legitimately contains
+// matmul_tiles. Emitting compute after writer would break that assertion.
 //
 // This is the real body for the EmitMetaliumPass stub that previously lived in
 // TensixflowPasses.cpp (that stub + its GEN_PASS_DEF_EMITMETALIUMPASS are removed
@@ -25,6 +33,7 @@
 #include "tensixflow/TensixflowPasses.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "tensixflow/Codegen/EmitCompute.h"
 #include "tensixflow/Codegen/EmitHost.h"
 #include "tensixflow/Codegen/EmitReader.h"
 #include "tensixflow/Codegen/EmitWriter.h"
@@ -79,12 +88,15 @@ public:
       return;
     }
 
-    // Emit the three artifacts to stdout, each preceded by a file-delimiter
+    // Emit the four artifacts to stdout, each preceded by a file-delimiter
     // banner (a valid C++ comment line, so an extracted artifact compiles
     // whether the banner is kept or stripped). host.cpp is the prefix before the
-    // first banner; reader.cpp / writer.cpp follow their banners. Todo 36 adds a
-    // compute.cpp banner + emitter; todo 37's file-writer splits on these banners.
+    // first banner; compute.cpp / reader.cpp / writer.cpp follow their banners.
+    // Compute precedes the dataflow kernels (see the ordering note in this
+    // file's header). Todo 37's file-writer splits on these banners.
     emitHost(kernel, schedule, llvm::outs());
+    llvm::outs() << "\n// ===== file: compute.cpp =====\n";
+    emitCompute(kernel, schedule, llvm::outs());
     llvm::outs() << "\n// ===== file: reader.cpp =====\n";
     emitReader(kernel, schedule, llvm::outs());
     llvm::outs() << "\n// ===== file: writer.cpp =====\n";
