@@ -1,0 +1,35 @@
+# TensixFlow Python package (Stretch A DSL frontend + NumPy golden + harness).
+#
+# Editable install (acceptance, todo 46):
+#   pip install -e python/          # or: uv pip install -e python/
+#
+# The package imports and @tensixflow.jit works with numpy alone; the MLIR
+# Python bindings are an OPTIONAL extra (see [project.optional-dependencies]).
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tensixflow"
+version = "0.1.0"
+description = "TensixFlow: Python DSL frontend (@tensixflow.jit) + NumPy golden + correctness harness for the TensixFlow MLIR compiler."
+readme = { text = "TensixFlow Python package: @tensixflow.jit DSL scaffold (Stretch A), bf16/fp32 rounding contract, fp32-exact golden, and the PCC correctness harness driving the C++ simulator.", content-type = "text/plain" }
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+# The MLIR Python bindings ship with the LLVM/MLIR build (the nix dev shell's
+# mlir package, or CMake's MLIRPythonBindings target), NOT from PyPI. This extra
+# is therefore an install marker only: `pip install -e '.[mlir]'` succeeds and
+# signals intent; point PYTHONPATH at the built bindings separately. The package
+# and @tensixflow.jit do NOT require it (todo 47/48 emit MLIR as text first).
+mlir = []
+
+[tool.setuptools.packages.find]
+# Ship the package proper; tests/ has no __init__.py and stays out of the wheel
+# (it remains runnable in-place via pytest + the conftest sys.path shim).
+include = ["tensixflow*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tensixflow/tests"]
