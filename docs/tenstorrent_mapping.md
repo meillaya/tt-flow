@@ -4,8 +4,9 @@ TensixFlow targets the **current** TT-Metalium host and kernel API, studied from
 tt-metal source at `@df36cd6`, and sits itself within the tt-mlir dialect family
 studied at `@9f06802f`. This page maps each tensixflow op and pass to the TT-Metalium
 surface it emits, records the removed legacy API the code generator deliberately
-avoids, and places each compilation stage relative to the TTIR / TTNN / D2M /
-TTKernel / TTMetal dialect levels.
+avoids, places each compilation stage relative to the TTIR / TTNN / D2M /
+TTKernel / TTMetal dialect levels, maps every tensixflow op and pass across all
+five levels, and traces the two tt-mlir lowering paths that leave TTIR.
 
 Every mapping here is a structural alignment. The emitted kernels compile against
 signature-only stub headers; they are not run on a device. See
@@ -114,3 +115,92 @@ dialect.
 The correspondence is by level, not by literal dialect: TensixFlow is a standalone
 stack with its own dialects, and the tt-mlir names are the reference taxonomy that
 names what each stage does.
+
+## Per-op mapping across the five dialect levels
+
+The todo-51 TTIR emitter (`--tensixflow-emit-ttir`) is the only code emitter in
+the tt-mlir compat wave (draft D21): the TTIR column below is the emitted
+contract, locked by `test/Tensixflow/emit_ttir.mlir`. The TTNN, D2M, TTKernel,
+and TTMetal columns are prose mappings: where each op lands if the module takes
+that level's path instead of stopping at TTIR text. The grounded syntax behind
+each cell (op shapes, layout attrs, RUN lines) is quoted in
+[ttmlir_study.md](ttmlir_study.md). One row per tensixflow op, in the order of
+`include/tensixflow/TensixflowOps.td`:
+
+| TensixFlow op | TTIR (emitted, todo 51) | TTNN (prose) | D2M (prose) | TTKernel (prose) | TTMetal (prose) |
+|---|---|---|---|---|---|
+| `tensixflow.func` | `func.func @name(...)` with `#ttcore.metal_layout`-encoded tensor types; argument tensors carry the `dram` encoding | the same func after `--ttir-to-ttnn-backend-pipeline`, tensors tiled by `ttnn.to_layout` | a func over tiled tensors `tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout>` with the grid in `#ttcore.grid` | the three `kernel_main` bodies (reader / compute / writer) | the host program builder: `CreateProgram` plus one `CreateKernel` per role |
+| `tensixflow.return` | `return %v : <type>`; a poisoned operand falls back to the source result type rendered `dram` | return of the tiled value after layout conversion | return of the tiled, grid-placed value | the closing `return` of each `kernel_main` body | the `distributed::Enqueue*` mesh dispatch that ships the result buffer |
+| `tensixflow.constant` | `"ttir.constant"() <{value = ...}>` with the value attr printed verbatim (plain type, no encoding) | a constant argument (`ttcore.argument_type<constant>`), tiled by `ttnn.to_layout` before first use | a constant buffer placed by `#ttcore.metal_layout` in `l1` or `dram` | compile-time args (`get_compile_time_arg_val`) or CB contents staged by the reader | the device-side write: `CreateBuffer` + `distributed::EnqueueWriteMeshBuffer` |
+| `tensixflow.add` | `"ttir.add"(%a, %b) : (T, T) -> T`, result encoded `l1` | `ttnn.add` after `ttnn.to_layout` on the operands (the study's const-eval CHECK pair) | a tile add inside `d2m.generic`: `d2m.tile_add` over `!ttcore.tile<32x32>` operands | `add_binary_tile_init` + `add_binary_tile`, the study's D2MToTTKernel landing | host dispatch unchanged: the add rides inside the registered compute kernel |
+| `tensixflow.gelu` | `// UNSUPPORTED: tensixflow.gelu has no TTIR mapping` (deliberate policy, see the note below the table) | the TT-NN elementwise gelu after layout conversion | an SFPU tile op inside `d2m.generic` (the D2MToTTKernel tests are SFPU-placement tests) | the SFPU instruction sequence for gelu staged between `cb_wait_front` and `cb_push_back` | host dispatch unchanged |
+| `tensixflow.matmul` | `"ttir.matmul"(%a, %b)` in the bare generic form, shape carried by the function type | `ttnn.matmul` (the study's positive-test expectation) after `ttnn.to_layout` | a tile-level matmul over `!ttcore.tile<32x32, bf16>` operands inside `d2m.generic` on the planned grid | `matmul_init` + `matmul_tiles` with the `tile_regs_acquire/commit/wait/release` + `pack_tile` sequence | the `ComputeConfig{.math_fidelity = HiFi4, .fp32_dest_acc_en = true}` kernel registration |
+| `tensixflow.rmsnorm` | `"ttir.rms_norm"(%x, %gamma) <{epsilon, normalized_shape, operandSegmentSizes}>`, the fused canonical op tt-mlir's own `--ttir-fusing` produces from the decomposition | the fused norm carries across the near 1:1 TTIR -> TTNN rename plus `ttnn.to_layout` | the decomposed tile chain (square, reduce, scale, add epsilon, rsqrt, broadcast, multiply) inside `d2m.generic` | the staged `cb_*` reads plus tile math emitted in `compute.cpp` | host dispatch unchanged |
+| `tensixflow.fused_rmsnorm_matmul` | decomposed to `ttir.rms_norm` + `ttir.matmul`: the fusion survives as adjacency, not as a single TTIR op | the same two-op chain in TTNN form | the same chain at tile level, sharing the planned grid and circular buffers | the fused reader/compute/writer pipeline the tensixflow scheduler interleaves | one mesh workload instead of two enqueues: the DRAM round-trip the fusion removes |
+| `tensixflow.fused_mlp` | the study-grounded prefix (`ttir.rms_norm` + `ttir.matmul` w1 + bias `ttir.add`) plus UNSUPPORTED markers for the gelu stage and its poisoned tail (matmul w2, residual add) | the mapped prefix in TTNN form; the unmapped gelu stage cuts the chain at the same point | the mapped prefix at tile level with the same cut | the fused MLP kernel bodies, gelu stage included at the schedule level | one mesh workload for the whole block |
+
+The gelu row states the emitter's policy honestly. `ttir.gelu` exists upstream
+(verified at the pin in tt-mlir's own fusing and model tests), but it sits
+outside the study-grounded vocabulary of [ttmlir_study.md](ttmlir_study.md),
+and that study is the todo-51 emitter's contract. The emitter therefore marks
+gelu UNSUPPORTED rather than emit syntax the contract does not cover, and this
+table supplies the prose mapping the emitter withholds. Dependent ops of an
+unsupported result are marked transitively (`operand is unsupported`), so the
+`fused_mlp` tail and the return mark too.
+
+## Per-pass mapping across the five dialect levels
+
+One row per pass declared in `include/tensixflow/TensixflowPasses.td`, in
+pipeline order. The level names the tt-mlir layer each pass does the work of,
+whether or not tensixflow routes through a literal tt-mlir dialect:
+
+| TensixFlow pass | Nearest tt-mlir level | What that level does there |
+|---|---|---|
+| `--tensixflow-infer-tile-layout` | **TTIR** | layout annotation: `#tensixflow.tile_layout` is the tensixflow analog of `#ttcore.metal_layout` riding tensor types; tt-mlir's alignment selection happens on the TTIRToD2M hop (`alignments.mlir`) |
+| `--tensixflow-canonicalize` | **TTIR** | canonicalization: identity-add removal, trivial constant folding, structural dedup, the same class as tt-mlir's TTIR canonicalize patterns |
+| `--tensixflow-fuse-rmsnorm-matmul` | **TTIR** | op fusion: the analog of tt-mlir's `--ttir-fusing`, which builds `ttir.rms_norm` from the pow/sum/multiply/add/rsqrt/broadcast/multiply chain (`rms_norm_fusion.mlir`) |
+| `--tensixflow-plan-noc-sharding` | **D2M** | grid placement + sharding under the L1 budget: `#ttcore.metal_layout<..., sharded>` + `#ttcore.grid` + `#ttcore.shard` |
+| `--tensixflow-allocate-circular-buffers` | **D2M** | CB allocation: `d2m.get_cb` / `d2m.wait` / `d2m.reserve` over `!d2m.cb<memref<..., #ttcore.memory_space<l1>>>` |
+| `--tensixflow-lower-to-ttkernel` | **TTKernel** | the D2M -> TTKernel analog: tensor ops become tile-loop nests over `cb_*` / `noc_async_*` / compute primitives |
+| `--tensixflow-emit-metalium` | **TTKernel** + **TTMetal** | the reader/compute/writer `kernel_main` bodies are the TTKernel-level artifact; `host.cpp` is the TTMetal-level artifact, the D2MToTTMetal analog |
+| `--tensixflow-emit-ttir` | **TTIR** | the StableHLOToTTIR analog in reverse: tensixflow ops become TTIR text either downstream path can consume |
+
+## The two lowering paths out of TTIR
+
+tt-mlir's Conversion directories (`include/ttmlir/Conversion/Passes.td` at
+`@9f06802f`) define five conversions: StableHLOToTTIR, TTIRToTTNN, TTIRToD2M,
+D2MToTTKernel, and D2MToTTMetal. They compose into the two paths that leave
+TTIR. Each hop below is evidenced by the RUN line of a real conversion test,
+quoted with its source path in [ttmlir_study.md](ttmlir_study.md#lowering-paths-with-the-ttmlir-opt-invocations).
+
+### Path 1: StableHLO -> TTIR -> TTNN (the runtime path)
+
+| Hop | ttmlir-opt invocation | Evidence (RUN line source) |
+|---|---|---|
+| StableHLO -> TTIR | `ttmlir-opt --stablehlo-to-ttir-pipeline` | `test/ttmlir/Conversion/StableHLOToTTIR/conv2d_op.mlir` |
+| TTIR -> TTNN | `ttmlir-opt --ttir-to-ttnn-backend-pipeline` | `test/ttmlir/Conversion/TTIRToTTNN/conv3d_default_config.mlir` |
+
+The TTIR -> TTNN hop is a near 1:1 op rename plus layout management:
+`ttnn.to_layout` tiles the tensors, then each `ttir.*` op reappears as its
+`ttnn.*` library counterpart (`ttir.add` -> `ttnn.add`, the study's const-eval
+CHECK pair). TensixFlow enters this path at TTIR: `--tensixflow-emit-ttir`
+emits text shaped for the backend pipeline, even though D21 keeps the TTNN hop
+itself prose.
+
+### Path 2: TTIR -> D2M -> TTKernel + TTMetal (the direct-to-metal path)
+
+| Hop | ttmlir-opt invocation | Evidence |
+|---|---|---|
+| TTIR -> D2M | `ttmlir-opt --ttcore-register-device --ttir-to-d2m` | RUN line: `test/ttmlir/Conversion/TTIRToD2M/embedding_types.mlir` |
+| D2M -> TTKernel | `ttmlir-opt --ttcore-register-device --convert-d2m-to-ttkernel` | RUN line: `test/ttmlir/Conversion/D2MToTTKernel/sfpu_op_placement_after_operands.mlir` (`d2m.tile_add` lands on `ttkernel.add_binary_tile_init` + `ttkernel.add_binary_tile`) |
+| D2M -> TTMetal | the D2MToTTMetal conversion, the host-side emission of programs, kernels, and buffers | the Conversion directory listing at the pin (`include/ttmlir/Conversion/Passes.td` + `Conversion/D2MToTTMetal/`); no RUN line quoted in the study doc |
+
+TensixFlow walks path 2 with its own dialects instead of tt-mlir's:
+`--tensixflow-plan-noc-sharding` + `--tensixflow-allocate-circular-buffers` do
+the TTIR -> D2M work (grid, shards, CBs), `--tensixflow-lower-to-ttkernel`
+does the D2M -> TTKernel work (tile-loop nests over `cb_*` / `noc_async_*` /
+compute primitives), and `--tensixflow-emit-metalium` does the D2M -> TTMetal
+work (`host.cpp` with `CreateProgram` / `CreateKernel` / `CreateCircularBuffer`
+and the `distributed::Enqueue*` dispatch). The `--tensixflow-emit-ttir` output
+is the fork point: the same TTIR text could equally feed path 1's
+`--ttir-to-ttnn-backend-pipeline`.
