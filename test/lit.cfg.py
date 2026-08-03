@@ -1,6 +1,7 @@
 # -*- Python -*-
 
 import os
+import shutil
 
 import lit.formats
 
@@ -42,3 +43,11 @@ llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 
 tool_dirs = [config.tensixflow_tools_dir, config.llvm_tools_dir]
 llvm_config.add_tool_substitutions(["tensixflow-opt", "FileCheck"], tool_dirs)
+
+# Gated ttmlir-opt feature detection (todo 53). If ttmlir-opt is on PATH, add
+# the "ttmlir-opt" feature so tests with `// REQUIRES: ttmlir-opt` run. If it
+# is absent (the usual case; todo 50 took the source-study fallback and did
+# NOT build it), the feature is simply not added, and lit reports those tests
+# as SKIP (UNSUPPORTED), never FAIL. The test still exits 0 either way.
+if shutil.which("ttmlir-opt") is not None:
+    config.available_features.add("ttmlir-opt")
