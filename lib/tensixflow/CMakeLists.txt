@@ -9,6 +9,10 @@ add_mlir_dialect_library(MLIRTensixflow
   AllocateCircularBuffersPass.cpp
   LowerToTTKernelPass.cpp
   EmitMetaliumPass.cpp
+  Compat/EmitTTIR.cpp
+  Compat/TTIRTextEmitter.cpp
+  Compat/TTIRFuncTranslator.cpp
+  Compat/TTIRLayoutAttrs.cpp
   Codegen/EmitHost.cpp
   Codegen/EmitCompute.cpp
   Codegen/EmitReader.cpp

@@ -102,4 +102,30 @@ def EmitMetaliumPass : TensixflowPass<"tensixflow-emit-metalium",
   ];
 }
 
+def EmitTTIRPass : TensixflowPass<"tensixflow-emit-ttir",
+    "Emit TTIR-shaped MLIR text from tensixflow ops"> {
+  let description = [{
+    Translates tensixflow ops to TTIR-shaped MLIR text (todo 51, Wave 9),
+    printed to stdout as a TERMINAL emission (flush + exit 0 once printed, the
+    EmitMetaliumPass convention, so mlir-opt does not append the module IR and
+    the stdout artifact is standalone TTIR text).
+
+    TTIR ONLY per draft D21: TTNN/D2M/TTKernel/TTMetal stay prose mappings in
+    docs/tenstorrent_mapping.md and are never emitted as code. The syntax
+    contract is docs/ttmlir_study.md (tt-mlir @9f06802f test snippets): the
+    generic op form with the shape in the function type, attributes in
+    `<{...}>`, and placement in `#ttcore.metal_layout` tensor encodings.
+
+    Mappings: add -> "ttir.add", matmul -> "ttir.matmul", rmsnorm ->
+    "ttir.rms_norm" (the fused canonical op tt-mlir's own --ttir-fusing
+    produces from the pow/sum/multiply/add/rsqrt/broadcast/multiply
+    decomposition), fused_rmsnorm_matmul -> rms_norm + matmul, fused_mlp ->
+    the study-grounded prefix (rms_norm + matmul + bias add) plus UNSUPPORTED
+    markers for the gelu stage and its poisoned tail. An op with no
+    study-grounded TTIR mapping (tensixflow.gelu today) emits a documented
+    `// UNSUPPORTED: <op> has no TTIR mapping` marker instead of crashing;
+    dependent ops of an unsupported result are marked transitively.
+  }];
+}
+
 #endif // TENSIXFLOW_PASSES_TD
