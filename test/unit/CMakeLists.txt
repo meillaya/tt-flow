@@ -148,3 +148,16 @@ target_link_libraries(PerfModelTest PRIVATE
 )
 
 add_test(NAME perf_model COMMAND PerfModelTest)
+
+# Disjunctive hardware acceptance harness (todo 57, D19/D25): an EXPLICIT if/else
+# in scripts/hw_acceptance.sh — device present -> the on-device branch (todo 55
+# entry point scripts/hw_run_on_device.sh, may fail honestly, never masked);
+# absent -> the no-device branch (todo 56: hw_bringup_dryrun.sh + compile-only
+# kernel check), which must PASS on a no-device box. NEVER an `&&...||` form.
+# WORKING_DIRECTORY pins the repo root (ctest's default CWD is the build dir);
+# the script also anchors itself at its own repo root, so the literal
+# repo-relative else arm resolves from any CWD.
+add_test(NAME hw-acceptance
+  COMMAND bash ${PROJECT_SOURCE_DIR}/scripts/hw_acceptance.sh
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
