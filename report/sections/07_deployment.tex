@@ -1,0 +1,191 @@
+% =============================================================================
+% 07_deployment.tex — lane WC
+% Sources: .github/workflows/ci.yml, ci-hardware.yml, flake.nix, flake.lock,
+%          devenv.yaml, docs/remote-box.md, docs/upstream_contribution.md,
+%          upstream/tt-mlir/README.md, scripts/build-tt-mlir.sh
+% =============================================================================
+\section{Deployment}\label{sec:deployment}
+
+Deployment, for TensixFlow, means reproducibility of the toolchain plus two
+CI paths: an always-on CPU path and a double-gated hardware path. There is
+no cloud provisioning anywhere in the loop.
+
+\subsection{Reproducibility: the pinned nix toolchain}
+
+The development environment is a nix flake
+(\texttt{flake.nix} + committed \texttt{flake.lock}):
+\begin{itemize}[nosep]
+  \item \textbf{Pinned input.} \texttt{flake.lock} locks
+        \texttt{NixOS/nixpkgs} to rev
+        \texttt{bd3c09ca2a2858daa15f26eb}\allowbreak\texttt{557faa4709635a41}
+        (\texttt{nixos-unstable}), so every shell resolves the same package
+        set on every machine.
+  \item \textbf{Pinned LLVM.} \texttt{flake.nix} selects the explicit
+        \texttt{llvmPackages\_20} set --- LLVM/MLIR 20.1.8 --- and its
+        comment forbids the floating default \texttt{llvmPackages}. The
+        shell exports \texttt{LLVM\_DIR}/\texttt{MLIR\_DIR} from the pinned
+        store paths and puts \texttt{mlir-tblgen} on the PATH; the package
+        list also fixes cmake, ninja, lit, and GoogleTest (with the
+        \texttt{dev} output named explicitly so \texttt{find\_package(GTest)}
+        resolves).
+  \item \textbf{devenv layering.} \texttt{devenv.yaml} re-pins its
+        \texttt{nixpkgs} input to the \emph{same} rev
+        (\allowbreak\texttt{\scriptsize bd3c09ca2a2858daa15f26eb}\allowbreak\texttt{\scriptsize 557faa4709635a41}) with an explicit
+        warning: at a floating \texttt{nixos-unstable} URL,
+        \texttt{devenv shell} re-resolves the lock to a head whose mlir is
+        uncached and source-broken. The rev must stay pinned here, not only
+        in \texttt{devenv.lock}.
+  \item \textbf{The lit pin.} Configure passes
+        \texttt{-DLLVM\_EXTERNAL\_LIT=\$(dirname \$(which lit))/.lit-wrapped}:
+        under nix, \texttt{bin/lit} is a bash wrapper, and LLVM's
+        \texttt{add\_lit\_target} spawns lit as \texttt{python3 <lit>}, which
+        breaks on the wrapper. Pointing CMake at the real Python script
+        \texttt{.lit-wrapped} keeps the lit target working.
+\end{itemize}
+
+The exact configure command, as documented in the README:
+
+\begin{lstlisting}[language=bash]
+cmake -G Ninja -B build \
+  -DMLIR_DIR=$MLIR_DIR -DLLVM_DIR=$LLVM_DIR \
+  -DLLVM_EXTERNAL_LIT="$(dirname "$(which lit)")/.lit-wrapped"
+\end{lstlisting}
+
+One sentence on this document itself: the \LaTeX{} report builds in an
+ephemeral \texttt{nix shell nixpkgs\#texlive.combined.scheme-full} (TeX Live
+2025) that resolves through the same pinned registry input, without touching
+the dev flake --- see \texttt{report/BUILDING.md}.
+
+\subsection{CI topology}\label{sec:deployment-ci}
+
+Two workflows, two disjoint runner classes
+(Figure~\ref{fig:deploy-ci-topology}).
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+      box/.style={draw=tensixnavy, rounded corners=2pt, align=center,
+                  font=\scriptsize, inner sep=3pt, fill=white,
+                  minimum width=6.4cm},
+      gate/.style={box, fill=tensixamber!25},
+      ok/.style={box, fill=tensixteal!15},
+      head/.style={box, fill=tensixlight, font=\small},
+      arr/.style={-{Stealth[length=2.2mm]}, tensixnavy},
+      paneltitle/.style={font=\small\itshape, tensixnavy},
+    ]
+    % ---- left: CPU path --------------------------------------------------------
+    \node[head] (c0) at (-3.9,0) {\textbf{\texttt{ci.yml} --- CPU path}\\
+      \scriptsize on: push, pull\_request (every push)};
+    \node[box, below=0.36cm of c0] (c1) {runner: \texttt{ubuntu-latest}\\
+      nix via \texttt{cachix/install-nix-action@v31} (flakes enabled)};
+    \node[box, below=0.3cm of c1] (c2) {\texttt{nix develop} configure + build\\
+      \scriptsize incl.\ the \texttt{.lit-wrapped} LLVM\_EXTERNAL\_LIT pin};
+    \node[box, below=0.3cm of c2] (c3) {lit regression: \texttt{check-tensixflow}\\
+      \scriptsize 25 tests = 24 passed + 1 unsupported};
+    \node[box, below=0.3cm of c3] (c4) {ctest: 11 gtest units\\
+      \scriptsize incl.\ \texttt{hw-acceptance} $\Rightarrow$ generated-kernel\\
+      \scriptsize compile check (no-device branch)};
+    \node[box, below=0.3cm of c4] (c5) {pytest: golden / harness / DSL suites};
+    \draw[arr] (c0) -- (c1); \draw[arr] (c1) -- (c2); \draw[arr] (c2) -- (c3);
+    \draw[arr] (c3) -- (c4); \draw[arr] (c4) -- (c5);
+    \begin{scope}[on background layer]
+      \node[fit=(c0)(c5), draw=tensixteal, rounded corners=3pt,
+            fill=tensixteal!6, inner sep=7pt] (cpupanel) {};
+    \end{scope}
+    \node[paneltitle, anchor=south] at (cpupanel.south)
+      {always runs --- no device, no cloud spend};
+
+    % ---- right: gated hardware path ---------------------------------------------
+    \node[head] (h0) at (3.9,0) {\textbf{\texttt{ci-hardware.yml} --- gated path}\\
+      \scriptsize on: pull\_request (label events), workflow\_dispatch};
+    \node[gate, below=0.36cm of h0] (h1) {\textbf{Gate 1 (job \texttt{if}):}\\
+      PR label \texttt{hardware.present}\\ OR explicit \texttt{workflow\_dispatch}};
+    \node[gate, below=0.3cm of h1] (h2) {\textbf{Gate 2 (\texttt{runs-on}):}\\
+      \texttt{[self-hosted, tenstorrent,}\\ \texttt{wormhole-n150]} only};
+    \node[box, below=0.3cm of h2] (h3) {assert \texttt{/dev/tenstorrent} exists\\
+      \scriptsize absent $\Rightarrow$ \texttt{exit 1}, never fall through\\
+      \scriptsize (a deviceless runner is a misconfiguration)};
+    \node[box, below=0.3cm of h3] (h4) {on-device branch only (no fallback):\\
+      \scriptsize compile vs real tt-metal, run,\\
+      \scriptsize PCC $\ge 0.9875$ vs the golden};
+    \draw[arr] (h0) -- (h1); \draw[arr] (h1) -- (h2); \draw[arr] (h2) -- (h3);
+    \draw[arr] (h3) -- (h4);
+    \begin{scope}[on background layer]
+      \node[fit=(h0)(h4), draw=tensixamber, rounded corners=3pt,
+            fill=tensixamber!6, inner sep=7pt] (hwpanel) {};
+    \end{scope}
+    \node[paneltitle, anchor=south] at (hwpanel.south)
+      {runs only where hardware exists --- fails loudly, never silently passes};
+  \end{tikzpicture}
+  \caption{CI topology: the CPU path (\texttt{ci.yml}) runs the full
+  build/lit/ctest/pytest chain on every push, with the generated-kernel
+  compile check riding inside ctest's \texttt{hw-acceptance} test; the
+  hardware path (\texttt{ci-hardware.yml}) is double-gated
+  (Section~\ref{sec:hardware-acceptance}) and only ever runs on a tagged
+  self-hosted runner carrying the device.}
+  \label{fig:deploy-ci-topology}
+\end{figure}
+
+Notes on the CPU path (all from \texttt{.github/workflows/ci.yml}): the
+ctest step passes \texttt{--no-tests=ignore} and the pytest step tolerates
+exit code 5 (``no tests ran'') so both stayed green in early waves; today
+both carry real suites. The generated-kernel compile check is not a separate
+CI step --- it is enforced inside ctest via \texttt{hw-acceptance}, whose
+no-device branch runs
+\path{scripts/hw_bringup_dryrun.sh && cmake --build build --target
+check-generated-kernels-compile} (Section~\ref{sec:hardware-acceptance}).
+
+\subsection{Cloud policy: opt-in, documented, never invoked}
+
+The MVP is local-first by policy:
+\begin{itemize}[nosep]
+  \item \texttt{docs/remote-box.md} states it up front: ``You do not need
+        this.'' A remote Linux build box is \emph{purely opt-in}, for keeping
+        a laptop free; the document's provider notes (e.g.\ PrimeIntellect
+        CPU sandboxes as the cheapest option) are indicative price ordering,
+        to be verified in-console.
+  \item \texttt{scripts/remote-box.sh} is an idempotent setup script run
+        \emph{manually} on a machine the user already owns access to:
+        install nix if absent, clone the repo, enter the dev shell, run the
+        standard configure + build. It provisions nothing and is never
+        invoked by CI.
+  \item Nothing in \texttt{ci.yml}, \texttt{ci-hardware.yml}, or the test
+        suites provisions or contacts a cloud provider, and nothing incurs
+        cloud spend automatically. Likewise \texttt{scripts/build-tt-mlir.sh}
+        (the optional tt-mlir study helper) is off the critical path: no
+        CMake target depends on it.
+\end{itemize}
+
+\subsection{Upstream contribution: scouted, implemented locally, not submitted}
+
+Status, exactly: TensixFlow \emph{scouted} a concrete tt-mlir contribution
+and \emph{implemented it locally}; the submission process is fully
+documented; and \textbf{nothing was submitted, forked, pushed, or merged}
+--- per the project owner's explicit binding instruction. This is policy in
+action, not an omission:
+
+\begin{itemize}[nosep]
+  \item \textbf{Scouted} (\texttt{docs/upstream\_contribution.md}, todo 58):
+        one new lit test for tt-mlir's \texttt{ttir.softmax} verifier,
+        covering both error branches --- one of which (shape mismatch) had
+        \emph{zero} test coverage anywhere in tt-mlir at the scouted
+        revision (\texttt{main} @ \texttt{da6f1ce0}). The gap is cited from
+        the actual repo: verifier source, op definition, tree listings, and
+        a search over the diagnostic strings.
+  \item \textbf{Implemented locally} (\texttt{upstream/tt-mlir/}, todo 59):
+        \texttt{softmax\_tests\_negative.mlir} --- 22 lines, three negative
+        cases, CHECK strings quoted verbatim from \texttt{SoftmaxOp::verify()}
+        --- plus a README recording provenance (scratch clone, \emph{not} a
+        fork; branch \texttt{softmax-negative-tests} based on
+        \texttt{da6f1ce0}; upstream lint hooks run; scoped diff of exactly
+        one new file) and an honest ``what is NOT verified'' section (never
+        executed against a real \texttt{ttmlir-opt}, whose toolchain is not
+        built on this box).
+  \item \textbf{Submission documented, never executed}:
+        \texttt{docs/upstream\_contribution.md} records the complete process
+        (fork + branch, \texttt{pre-commit}, targeted \texttt{llvm-lit},
+        PR template, CI expectations) under a heading that says
+        ``DOCUMENTED ONLY; never executed in this plan,'' and states that
+        the plan ``explicitly stops before step 1.'' The same constraint is
+        repeated in \texttt{upstream/tt-mlir/README.md}.
+\end{itemize}

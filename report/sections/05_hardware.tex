@@ -1,0 +1,195 @@
+% =============================================================================
+% 05_hardware.tex — lane WC
+% Sources: lib/tensixflow/Scheduler/L1Model.h, scripts/hw_probe.sh,
+%          scripts/hw_bringup_dryrun.sh, scripts/hw_acceptance.sh,
+%          .github/workflows/ci-hardware.yml, docs/hardware_path.md
+% =============================================================================
+\section{Hardware}\label{sec:hardware}
+
+TensixFlow targets a modeled Tenstorrent Wormhole n150-class spatial
+accelerator. The development box is CPU-only: \emph{no Tenstorrent device is
+owned}, and nothing in the MVP touches hardware. This section documents the
+device model the scheduler reasons about, the always-available no-device
+validation, and the gated path that opens if a real n150 ever appears.
+
+\subsection{The modeled device}
+
+The device model lives in a single header,
+\texttt{lib/tensixflow/Scheduler/L1Model.h}, which is the declared
+\emph{single source of truth} for the per-core L1 budget: the circular-buffer
+allocator and the static performance model import these constants verbatim
+and are forbidden from duplicating them. The exact constants are reproduced
+in Table~\ref{tab:hardware-device-spec}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Modeled device specification. Constants are the exact values from
+  \texttt{lib/tensixflow/Scheduler/L1Model.h}; the remaining rows are stated
+  in \texttt{docs/hardware\_path.md} and \texttt{scripts/hw\_bringup\_dryrun.sh}.}
+  \label{tab:hardware-device-spec}
+  \begin{tabular}{@{}lp{4.0cm}p{4.6cm}@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Grounding} \\
+    \midrule
+    Device class & Wormhole n150-class, single part & README, \texttt{L1Model.h} header \\
+    Core grid & $8 \times 8$ Tensix grid (64 cores) & \texttt{L1Model.h} header comment \\
+    Tile shape & $32 \times 32$ elements & \texttt{kTileBytes} definition \\
+    Data formats & bf16 (storage), fp32 (accumulate) & \texttt{L1Model.h} header comment \\
+    Math fidelity & \texttt{MathFidelity::HiFi4} & \texttt{docs/hardware\_path.md}, Step 1 \\
+    \texttt{kL1TotalBytes} & $1024 \times 1024 = 1{,}048{,}576$ B (1 MiB/core) & \texttt{L1Model.h} \\
+    \texttt{kL1ReserveBytes} & $64 \times 1024 = 65{,}536$ B (64 KiB, code/stack) & \texttt{L1Model.h} \\
+    \texttt{kCBShardBudget} & \texttt{kL1TotalBytes} $-$ \texttt{kL1ReserveBytes} $= 983{,}040$ B (960 KiB) & \texttt{L1Model.h} \\
+    \texttt{kTileBytes} & $32 \times 32 \times 2 = 2{,}048$ B & \texttt{L1Model.h} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The modeled L1 per core is \textbf{conservative by design}: the literal
+Wormhole n150 L1 is larger (about 1.5 MB), but TensixFlow models 1 MiB and
+documents the caveat directly in the header comment. Every plan produced by
+the sharding and CB-allocation passes is therefore provably within budget on
+the real part if it fits the model.
+
+\subsection{The per-core L1 budget model}
+
+Figure~\ref{fig:hardware-l1-budget} renders the budget arithmetic exactly as
+the constants define it: tt-metal addresses memory by $(x, y, \text{local L1
+address})$, and each core's L1 is carved into a 64 KiB reserve (kernel code
+and stack) plus the 960 KiB the planner may spend on circular buffers and
+tensor shards. The circular-buffer sizing formula, in bytes, is
+\begin{equation}
+  \text{bytes}(\mathrm{CB}) = n_{\mathrm{CB}} \times \text{depth} \times 2048,
+  \label{eq:hardware-cb-sizing}
+\end{equation}
+i.e.\ the number of buffers times the depth in 32$\times$32 tiles times
+\texttt{kTileBytes} $= 2048$ B. The committed plan
+\texttt{reports/rmsnorm\_matmul\_plan.json} instantiates this for the fused
+RMSNorm+MatMul kernel: three CBs (\texttt{c\_0}, \texttt{c\_1}, \texttt{c\_16},
+the tt-metal \texttt{tt::CBIndex} convention for in0/in1/out) at depth 160
+tiles each, so $3 \times 160 \times 2048 = 983{,}040$ B --- exactly the
+960 KiB \texttt{kCBShardBudget}, fully consumed.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      seg/.style={draw=tensixslate, minimum height=0.9cm, anchor=west},
+    ]
+    % Total bar: 1024 KiB mapped to 12.8 cm (0.0125 cm per KiB)
+    \node[seg, fill=tensixlight, minimum width=12.8cm] (total) at (0,0) {};
+    % Reserve segment: 64 KiB -> 0.8 cm
+    \node[seg, fill=tensixamber!55, minimum width=0.8cm] (reserve) at (0,0) {};
+    % CB + shard budget segment: 960 KiB -> 12.0 cm
+    \node[seg, fill=tensixteal!35, minimum width=12.0cm] (budget) at (0.8,0) {};
+    % Reserve label with pointer (segment too narrow for inline text)
+    \node[font=\scriptsize, align=left] (reslabel) at ($(reserve.north)+(2.6,0.75)$)
+      {reserve (code/stack)\\ \texttt{kL1ReserveBytes} $= 64$ KiB};
+    \draw[-{Stealth}, tensixslate] (reslabel.south west) -- (reserve.north);
+    % Budget label inside the bar
+    \node[font=\small, tensixnavy] at ($(budget.west)+(6.0,0)$)
+      {CB + shard budget --- \texttt{kCBShardBudget} $= 960$ KiB ($983{,}040$ B)};
+    % Brace under the whole bar: total
+    \draw[decorate, decoration={brace, amplitude=5pt, mirror}]
+      ($(total.south west)+(0,-0.15)$) -- ($(total.south east)+(0,-0.15)$)
+      node[midway, below=6pt]
+        {modeled L1 per core: \texttt{kL1TotalBytes} $= 1024 \times 1024 = 1{,}048{,}576$ B (1 MiB)};
+    % CB sizing formula + worked example
+    \node[draw=tensixnavy, fill=tensixlight, rounded corners=2pt,
+          align=left, font=\small] at ($(total.south)+(0,-2.3)$)
+      {\textbf{CB sizing:}\quad $\text{bytes} = n_{\mathrm{CB}} \times \text{depth} \times 2048$ \\[1pt]
+       \scriptsize rmsnorm\_matmul plan: $n_{\mathrm{CB}}=3$ (\texttt{c\_0}, \texttt{c\_1}, \texttt{c\_16}),
+       depth $=160$ tiles $\Rightarrow 3 \times 160 \times 2048 = 983{,}040$ B $=$ 960 KiB};
+  \end{tikzpicture}
+  \caption{Per-core L1 budget of the modeled Wormhole n150-class device, per
+  \texttt{L1Model.h}: a 64 KiB reserve carved out of the 1 MiB total leaves the
+  960 KiB circular-buffer/shard budget the planner spends, together with the CB
+  sizing formula and the fused RMSNorm+MatMul working point from
+  \texttt{reports/rmsnorm\_matmul\_plan.json}.}
+  \label{fig:hardware-l1-budget}
+\end{figure}
+
+\subsection{Bring-up runbook (five validated steps)}
+
+\texttt{scripts/hw\_bringup\_dryrun.sh} is the always-available half of the
+hardware acceptance: it \emph{prints} the validated bring-up runbook (grounded
+in tt-metal \texttt{INSTALLING.md} at the pinned revision \texttt{@df36cd6}),
+probes \texttt{/dev/tenstorrent}, and always exits 0 --- a dry-run, not a
+probe gate. Its five steps, summarized, are Table~\ref{tab:hardware-bringup}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{The five validated bring-up steps printed by
+  \texttt{scripts/hw\_bringup\_dryrun.sh} for a Wormhole n150 box, from zero
+  to a running generated kernel project.}
+  \label{tab:hardware-bringup}
+  \begin{tabular}{@{}lp{9.6cm}@{}}
+    \toprule
+    \textbf{Step} & \textbf{Summary (as the script prints it)} \\
+    \midrule
+    1. Obtain/access an n150 & Shell access to a Linux box with a Wormhole n150 seated (PCIe); the modeled target: $8\times8$ Tensix grid, $32\times32$ tiles, bf16. \\
+    2. KMD + host tools & TT-Installer (\texttt{install.sh} v2.1.0, no container runtime): installs TT-KMD ($\ge$ v2.8.0), \texttt{tt-smi}, \texttt{tt-flash}. Once the KMD loads, \texttt{/dev/tenstorrent} exists --- the probe target the whole acceptance keys on. \\
+    3. Build tt-metal with runtime & Clone \texttt{tt-metal}, \texttt{git checkout df36cd6}, run \texttt{./build\_metal.sh}. The runtime (host API + device dispatch) is required to enqueue kernels; TensixFlow's stub headers are only for the no-device structural check. \\
+    4. Flash firmware & Flash before first use: TT-Installer drives \texttt{tt-flash}; Wormhole boards pair with \texttt{fw\_pack-19.8.1.fwbundle} (firmware v19.8.1). Verify card, FW version, and health with \texttt{tt-smi -s}. \\
+    5. Run the generated project & Build \texttt{kernels/generated/fused\_rmsnorm\_matmul/} (host/reader/compute/writer.cpp) against the \emph{real} tt-metal, enqueue via \texttt{distributed::EnqueueMeshWorkload}, read back, and validate PCC $\ge 0.9875$ against the NumPy golden --- the same bar as the simulator harness. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Device / no-device acceptance}\label{sec:hardware-acceptance}
+
+The hardware wave is accepted \emph{disjunctively}: either a run on a real
+device with PCC $\ge 0.9875$ against the golden, or the validated no-device
+substitute (bring-up runbook + compile-only kernel check + hardware-gated
+CI). The disjunction is wired in \texttt{scripts/hw\_acceptance.sh} as an
+\textbf{explicit if/else, never \texttt{\&\&\ldots||}}:
+
+\begin{lstlisting}[language=bash]
+if [ -e "${TT_DEVICE_PATH}" ]; then          # default: /dev/tenstorrent
+  # ON-DEVICE branch: compile + run + PCC >= 0.9875 vs the golden.
+  # Only this arm runs on a device box; a failure is never masked.
+  bash scripts/hw_run_on_device.sh
+else
+  # NO-DEVICE branch: runbook dry-run + compile-only kernel check.
+  bash scripts/hw_bringup_dryrun.sh && \
+    cmake --build build --target check-generated-kernels-compile
+fi
+\end{lstlisting}
+
+The \texttt{\&\&\ldots||} spelling would be unsafe: in
+\texttt{on-device \&\& run || no-device}, a device that is \emph{present but
+failing} would fall through to the passing no-device branch and its failure
+would be masked. With \texttt{if/else} exactly one branch runs and the
+script's exit status is that branch's status, unmasked; the harness also
+fail-honestly exits nonzero if the on-device arm is reached without its entry
+point (\texttt{scripts/hw\_run\_on\_device.sh}) present.
+
+\paragraph{The no-device branch does real work.}
+It is not a no-op. First, the dry-run runbook exits 0. Second,
+\texttt{check-generated-kernels-compile} (mechanics in
+Section~\ref{sec:software-stubs}) asserts three things: the current-API
+baseline kernel compiles \texttt{-fsyntax-only} against the stubs, the legacy
+fixture referencing the removed symbol \texttt{EnqueueProgram} is
+\emph{rejected} with a diagnostic naming that symbol, and all four generated
+kernel files (\texttt{host.cpp}, \texttt{reader.cpp}, \texttt{compute.cpp},
+\texttt{writer.cpp}) compile. A typo in any generated kernel fails this
+branch honestly.
+
+\paragraph{The hardware-gated CI job.}
+\texttt{.github/workflows/ci-hardware.yml} adds a single \texttt{on-device}
+job, gated \textbf{twice} so it can never run on a deviceless box:
+\begin{enumerate}[nosep]
+  \item \emph{Label/dispatch gate (job-level \texttt{if}):} the PR must carry
+        the \texttt{hardware.present} label, or the run must be an explicit
+        \texttt{workflow\_dispatch} manual override.
+  \item \emph{Runner gate (\texttt{runs-on}):}
+        \texttt{[self-hosted, tenstorrent, wormhole-n150]} --- only a
+        self-hosted runner tagged as carrying the hardware can pick the job
+        up; GitHub-hosted runners never match.
+\end{enumerate}
+When both hold, the job first asserts \texttt{/dev/tenstorrent} exists and
+exits 1 on absence --- a gated job that lands on a deviceless runner is a
+misconfiguration that must fail honestly, not silently pass --- and then runs
+the on-device entry point, failing loudly while that script does not yet
+exist. In short: \emph{a skipped-on-device is never a silent pass.} The
+ordinary CPU-only CI (Section~\ref{sec:deployment-ci}) is untouched and runs
+on every push.

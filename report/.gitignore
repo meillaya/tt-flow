@@ -1,0 +1,17 @@
+# LaTeX build artifacts (gitignore everything except the final PDF)
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Intermediate job outputs from the default-jobname verification pass
+main.pdf
+
+# Skeleton stub PDF — intermediate deliverable, regenerated on demand.
+# NOTE: the final tensixflow_report.pdf is deliberately NOT gitignored.
+tensixflow_report_stub.pdf

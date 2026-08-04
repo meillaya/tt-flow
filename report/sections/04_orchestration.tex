@@ -1,0 +1,346 @@
+% =============================================================================
+% 04_orchestration.tex — lane WB, completed by integrator WI.
+% Sources: .omo/plans/tensixflow.md (waves, todos, final verification wave),
+%          .omo/boulder.json (works.tensixflow-f194c7b3.task_sessions and
+%            session_ids; per-task elapsed_ms fields),
+%          .omo/start-work/ledger.jsonl (task events, adversarial classes),
+%          .omo/evidence/ (task-* files, F3 QA log, W0 report evidence).
+% Citation-free per the BUILDING.md contract.
+% =============================================================================
+\section{Orchestration}\label{sec:orchestration}
+
+This section describes how the campaign was actually run, which is as much a
+deliverable as the compiler itself: a single orchestrator session drove every
+todo through a fixed execution loop, eleven parallel waves with two sanctioned
+skips, and a four-reviewer final verification wave. Every timing and count
+quoted here traces to \path{.omo/boulder.json}, \path{.omo/start-work/
+ledger.jsonl}, or \path{.omo/evidence/}; none is reconstructed from memory.
+The policy that bounded the work (honesty, non-vacuity, disjunctive acceptance,
+scope guardrails) is in Section~\ref{sec:policy}.
+
+\subsection{Execution model}
+
+The campaign ran as a closed loop over the plan's 60 todos
+(Figure~\ref{fig:orch-execution-loop}). The loop's state is not prose: the plan
+file \path{.omo/plans/tensixflow.md} is the single source of truth for waves,
+todos, and agent-executable acceptance criteria, and \path{.omo/boulder.json}
+mirrors it as machine state (active work ID, per-todo status, session IDs, and
+per-task \texttt{elapsed\_ms} timings). Each todo was decomposed into a lane
+assignment, delegated to a subagent, and accepted back only through an
+independent verification gate.
+
+\begin{figure}[t]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\small,
+      box/.style={draw=tensixnavy, very thick, fill=tensixlight,
+                  rounded corners=2pt, align=center, inner sep=4pt,
+                  minimum width=3.1cm, minimum height=1.2cm, font=\footnotesize},
+      gbox/.style={draw=tensixamber, very thick, fill=tensixamber!12,
+                   rounded corners=2pt, align=center, inner sep=4pt,
+                   minimum width=3.2cm, minimum height=1.2cm, font=\footnotesize},
+      okbox/.style={draw=tensixteal, very thick, fill=tensixteal!12,
+                    rounded corners=2pt, align=center, inner sep=4pt,
+                    minimum width=3.1cm, minimum height=1.2cm, font=\footnotesize},
+      gate/.style={draw=tensixamber, very thick, fill=tensixamber!12,
+                   diamond, aspect=1.5, align=center, inner sep=3pt,
+                   font=\footnotesize},
+      arr/.style={-{Stealth[length=2.4mm]}, tensixnavy, line width=0.9pt},
+      blk/.style={-{Stealth[length=2.4mm]}, tensixamber, line width=0.9pt},
+      lab/.style={font=\scriptsize, text=tensixnavy, align=center},
+    ]
+    % ---- top row: plan -> boulder state -> decompose --------------------
+    \node[box] (plan) at (0,0)
+      {\textbf{plan}\\[-1pt]\scriptsize \path{.omo/plans/tensixflow.md}\\[-1pt]
+       \scriptsize waves, todos, acceptance criteria};
+    \node[box] (state) at (5.4,0)
+      {\textbf{boulder state}\\[-1pt]\scriptsize \path{.omo/boulder.json}\\[-1pt]
+       \scriptsize per-todo status + session IDs};
+    \node[box] (decomp) at (10.8,0)
+      {\textbf{decompose to lanes}\\[-1pt]
+       \scriptsize wave $\to$ todos by difficulty category};
+    \draw[arr] (plan) -- (state);
+    \draw[arr] (state) -- (decomp);
+    % ---- right column: delegate -> DoneClaim ----------------------------
+    \node[box] (delegate) at (10.8,-2.7)
+      {\textbf{delegate to subagents}\\[-1pt]
+       \scriptsize Sisyphus-Junior workers by category\\[-1pt]
+       \scriptsize (quick / deep / writing / low);\\[-1pt]
+       \scriptsize oracle reviewers: read-only audits};
+    \node[box] (done) at (10.8,-5.3)
+      {\textbf{DoneClaim}\\[-1pt]
+       \scriptsize changed files + tests + risks};
+    \draw[arr] (decomp) -- (delegate);
+    \draw[arr] (delegate) -- (done);
+    % ---- gate -------------------------------------------------------------
+    \node[gate] (av) at (5.4,-5.3)
+      {\textbf{AdversarialVerify}\\[-1pt] \scriptsize independent re-run};
+    \draw[arr] (done) -- (av);
+    % ---- ledger ------------------------------------------------------------
+    \node[okbox] (ledger) at (0,-5.3)
+      {\textbf{ledger + checkbox flip}\\[-1pt]
+       \scriptsize \path{ledger.jsonl} event appended,\\[-1pt]
+       \scriptsize todo checkbox in plan};
+    \draw[arr] (av) -- (ledger)
+      node[midway, above=2pt, lab, text=tensixteal] {only \texttt{confirmed} passes};
+    % ---- rework loop (blocking verdicts) -----------------------------------
+    \draw[blk] (av.south) -- ++(0,-0.8) -| (delegate.east)
+      node[pos=0.9, right=2pt, align=left, font=\scriptsize, text=tensixamber]
+        {\texttt{false-positive} / \texttt{needs-fix} /\\[-1pt]
+         \texttt{needs-human-review} all block};
+    % ---- close the loop -----------------------------------------------------
+    \draw[arr] (ledger) -- (plan)
+      node[midway, left=2pt, lab] {next todo};
+  \end{tikzpicture}}%
+  \caption{The campaign execution loop. Each todo moves plan $\to$ boulder
+    state $\to$ lane decomposition $\to$ subagent delegation, returns a
+    \texttt{DoneClaim}, and is accepted only when an independent
+    \texttt{AdversarialVerify} run re-confirms it; only the verdict
+    \texttt{confirmed} appends a \texttt{ledger.jsonl} event and flips the
+    plan's checkbox. The three blocking verdicts route the todo back to
+    delegation for rework. Structure from \texttt{.omo/start-work/ledger.jsonl}
+    and \texttt{.omo/boulder.json}.}
+  \label{fig:orch-execution-loop}
+\end{figure}
+
+Two properties make the loop trustworthy rather than ceremonial. First, every
+verification is a re-run, not a re-read: the orchestrator independently
+executed each todo's acceptance commands (for example, \texttt{check-tensixflow},
+\texttt{ctest}, \texttt{pytest}, and the full lowering pipeline) rather than
+trusting the worker's summary. Second, every task-completed ledger event
+carries an \emph{adversarial-class} map: the same nine trigger-mapped QA
+classes, assessed per task. The classes are malformed input, prompt injection,
+cancel/resume, stale state, dirty worktree, hung/long commands, flaky tests,
+misleading success output, and repeated interruptions; each event records
+either a concrete probe (``probed: \ldots'') or an explicit
+``not-applicable'' with the reason. The probes are real work, not labels: the
+toolchain spike probed stale nix state and a dirty worktree, the first lit test
+carried a deliberate wrong-CHECK negative proof, the CI workflow was grepped
+for forbidden GPU/device tokens, and every early task verified that malformed
+input produced a clean diagnostic rather than a crash (see
+\path{.omo/evidence/task-1-tensixflow.log} through
+\path{.omo/evidence/task-7-tensixflow.txt}).
+
+\subsection{Wave plan}
+
+The 60 todos were executed as eleven parallel waves
+(Figure~\ref{fig:orch-wave-dag}). The critical spine is W1 (environment and
+skeleton, the gating uncertainty) through W7 (simulator, correctness, perf
+model, visualizer, benchmarks, and docs). Four side lanes hang off the spine:
+W8 (the Python DSL) may begin once W2's dialect lands and integrates after W7;
+W9 (TT-MLIR compatibility) and W10 (the conditional hardware path) both wait on
+W6's codegen; W11 (the upstream contribution) waits on W9's familiarity. The
+Final Wave F1--F4 runs after all todos and gates the whole campaign.
+
+\begin{figure}[t]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\small,
+      wave/.style={draw=tensixnavy, very thick, fill=tensixlight,
+                   rounded corners=2pt, align=center, inner sep=4pt,
+                   minimum width=3.2cm, minimum height=0.95cm, font=\footnotesize},
+      side/.style={draw=tensixteal, very thick, fill=tensixteal!10,
+                   rounded corners=2pt, align=center, inner sep=4pt,
+                   minimum width=3.4cm, minimum height=0.95cm, font=\footnotesize},
+      fin/.style={draw=tensixamber, very thick, fill=tensixamber!12,
+                  rounded corners=2pt, align=center, inner sep=4pt,
+                  minimum width=5.2cm, minimum height=0.95cm, font=\footnotesize},
+      tag/.style={font=\scriptsize\itshape, tensixslate, align=right},
+      arr/.style={-{Stealth[length=2.2mm]}, tensixnavy, line width=0.8pt},
+    ]
+    % ---- critical spine ----------------------------------------------------
+    \node[wave] (w1) at (0,7.6) {\textbf{W1} env + skeleton};
+    \node[wave] (w2) at (0,6.2) {\textbf{W2} dialect + ops};
+    \node[wave] (w3) at (0,4.8) {\textbf{W3} passes};
+    \node[wave] (w4) at (0,3.4) {\textbf{W4} fusion};
+    \node[wave] (w5) at (0,2.0) {\textbf{W5} scheduler / CB};
+    \node[wave] (w6) at (0,0.6) {\textbf{W6} codegen};
+    \node[wave] (w7) at (0,-0.8) {\textbf{W7} sim + correctness + perf + viz};
+    \node[fin]  (fin) at (0,-2.4) {Final wave F1--F4 (all must APPROVE)};
+    \draw[arr] (w1) -- (w2); \draw[arr] (w2) -- (w3);
+    \draw[arr] (w3) -- (w4); \draw[arr] (w4) -- (w5);
+    \draw[arr] (w5) -- (w6); \draw[arr] (w6) -- (w7);
+    \draw[arr] (w7) -- (fin);
+    % ---- side lanes -----------------------------------------------------------
+    \node[side] (w8) at (-5.9,3.4) {\textbf{W8} Python DSL (from W2,\\[-1pt] \scriptsize integrates after W7)};
+    \node[side] (w9) at (6.0,0.6) {\textbf{W9} TT-MLIR compat};
+    \node[side] (w10) at (6.0,-1.1) {\textbf{W10} hardware \\(conditional)};
+    \node[side] (w11) at (10.4,0.6) {\textbf{W11} upstream contribution};
+    \draw[arr] (w2.west) -| (w8.north);
+    \draw[arr] (w6.east) -- (w9.west);
+    \draw[arr] (w6.east) -- ++(1.15,0) |- (w10.west);
+    \draw[arr] (w9.east) -- (w11.west);
+    % ---- cross-cutting contracts ----------------------------------------------
+    \node[tag, anchor=east] at (-2.35,2.0) {W5 owns the JSON schema};
+    \node[tag, anchor=east] at (-2.35,0.6) {W6 owns schedule IR + stubs};
+    \node[tag, anchor=east] at (-2.35,-0.8) {W7 owns the rounding contract};
+  \end{tikzpicture}}%
+  \caption{The eleven-wave dependency DAG plus the final verification wave.
+    The W1--W7 spine is the critical path; W8 starts from W2 and integrates
+    after W7, W9 and W10 wait on W6, and W11 waits on W9. Three cross-cutting
+    contracts are owned one wave each: W5 owns the plan/perf/viz JSON schema,
+    W6 owns the schedule IR and the signature-only stub headers, and W7 owns
+    the     bf16-simulator / fp32-golden rounding contract (Section
+    \ref{sec:policy-nonvacuity}). Dependency matrix from
+    \texttt{.omo/plans/tensixflow.md}.}
+  \label{fig:orch-wave-dag}
+\end{figure}
+
+The wave plan carried three cross-cutting contracts that were decided once and
+imported by every downstream consumer, never duplicated (Section
+\ref{sec:policy}): W5 owns the plan/perf/viz JSON schema, W6 owns the MLIR
+schedule IR (the codegen$\leftrightarrow$simulator contract) together with the
+signature-only tt-metal stub headers pinned at \texttt{@df36cd6}, and W7 owns
+the rounding contract that makes the PCC bar non-vacuous. Two todos were
+plan-sanctioned skips rather than failures: T55 (on-device branch) because no
+device is owned, covered by the disjunctive hardware acceptance
+(Section~\ref{sec:policy-disjunctive}), and T60 (submit) because the owner
+issued an explicit do-not-submit override; both are recorded as skips in the
+ledger and produced no commits.
+
+\subsection{Scale and cadence}
+
+Per-task elapsed times were tracked in \path{.omo/boulder.json} as
+\texttt{elapsed\_ms} fields. Table~\ref{tab:orch-timing} lists the notable
+ones. The honest caveat on the headline number bears repeating in prose: the
+176-hour campaign figure is wall-clock time from the first plan-approved state
+to the final wave, so it includes idle time and human-wait time (the upstream
+scout at 11h16m, for example, was the elapsed span of a long-running session,
+not 11 hours of continuous compute). The per-task figures are the reliable
+signal: even the heaviest implementation todos (T1, T12, T30, T39, T59)
+measured in minutes to a few hours of wall-clock each.
+
+\begin{longtable}{@{}p{1.0cm}p{6.2cm}p{3.3cm}p{4.4cm}@{}}
+  \caption{Notable per-task elapsed wall-clock times from
+    \texttt{.omo/boulder.json} (\texttt{elapsed\_ms} fields, converted).
+    \texttt{T<number>} refers to the plan todo.}
+  \label{tab:orch-timing}\\
+  \toprule
+  \textbf{Todo} & \textbf{Task} & \textbf{Elapsed} & \textbf{Note} \\
+  \midrule
+  \endfirsthead
+  \multicolumn{4}{@{}l}{\small\itshape Table \thetable{} (continued)}\\
+  \toprule
+  \textbf{Todo} & \textbf{Task} & \textbf{Elapsed} & \textbf{Note} \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endfoot
+  T1 & Toolchain spike: nix flake + devenv on \texttt{llvmPackages\_20} &
+    23\,m\,54\,s & Gating uncertainty; proved the env wiring first \\
+  T12 & Consolidated shape-inference + verifier test suite &
+    13\,m\,6\,s & Wave 2 \\[-1pt]
+  T30 & \texttt{plan-noc-sharding} + \texttt{allocate-circular-buffers}
+    passes + plan report & 10\,m\,44\,s & Wave 5; first consumer of the JSON
+    schema \\
+  T39 & Functional tile simulator over circular buffers &
+    15\,m\,29\,s & Wave 7; executes the schedule IR \\
+  T58 & Scout a concrete small upstream contribution &
+    11\,h\,16\,m & Longest single task (repo reconnaissance) \\
+  T59 & Implement the contribution per upstream style + tests &
+    3\,h\,17\,m & Wave 11; \texttt{upstream/} artifact \\
+  \midrule
+  Campaign & Full plan-to-final-wave wall-clock &
+    176\,h\,22\,m\,13\,s &
+    \emph{includes idle / human-wait time, not pure compute} \\
+  \bottomrule
+\end{longtable}
+
+Three repository counts, all measured by direct command on this box, anchor the
+``one commit per todo, one evidence file per task'' claim:
+
+\begin{itemize}[nosep]
+  \item \texttt{git rev-list --count HEAD} returns \textbf{58} commits: one
+        conventional commit per implemented todo, each leaving the tree green.
+        The 60-todo plan minus the two sanctioned skips (T55, T60) is exactly
+        58, and \texttt{git log --oneline} spot-checks the style, e.g.\
+        \texttt{feat(upstream): implement contribution per upstream style +
+        tests}, \texttt{test(hw): disjunctive hardware acceptance harness},
+        \texttt{feat(sim): functional tile simulator over circular buffers}.
+  \item \texttt{ls .omo/evidence | grep -c task-} returns \textbf{64}
+        evidence files: every implemented todo 1--59 (excluding the two skips)
+        has one, T41 and T43 additionally keep a metrics JSON and a rendered
+        HTML, the F3 QA log and its two screenshots are archived, and the
+        report pipeline's own evidence files live there too.
+  \item \texttt{wc -l < .omo/start-work/ledger.jsonl} returns \textbf{68}
+        lines: the work-started event, one task-completed or task-skipped event
+        per todo, four wave-complete summaries, and four final-wave-verdict
+        events (Section~\ref{sec:orchestration-finalwave}).
+\end{itemize}
+
+\subsection{Final verification wave}\label{sec:orchestration-finalwave}
+
+After all todos landed, four independent read-only oracle reviewers ran in
+parallel and each returned APPROVE (Table~\ref{tab:orch-finalwave}). Each
+reviewer's session ID is recorded in \path{.omo/boulder.json} under
+\texttt{works.tensixflow-f194c7b3.session\_ids}, and each verdict is logged in
+\path{.omo/start-work/ledger.jsonl} as a \texttt{final-wave-verdict} event.
+The wave was read-only by guarantee: \texttt{git status} after the wave showed
+only untracked \path{.omo/} evidence, and zero product files were modified by
+reviewers.
+
+\begin{table}[t]
+  \centering
+  \footnotesize
+  \caption{Final verification wave: four independent read-only oracle
+    reviewers, all APPROVE. Session IDs are from
+    \texttt{.omo/boulder.json} \texttt{works.tensixflow-f194c7b3.session\_ids};
+    the four \texttt{final-wave-verdict} events are in
+    \texttt{.omo/start-work/ledger.jsonl}.}
+  \label{tab:orch-finalwave}
+  \begin{tabular}{@{}p{0.5cm}p{2.0cm}p{4.6cm}p{5.6cm}c@{}}
+    \toprule
+    \textbf{ID} & \textbf{Reviewer role} & \textbf{Session ID} & \textbf{Read-only verification} & \textbf{Verdict} \\
+    \midrule
+    F1 & Plan compliance audit &
+      \texttt{\scriptsize ses\_0361ca41cffeQDZJY0cmSiTjsD} &
+      Re-runs every todo's acceptance command: \texttt{check-tensixflow}
+      (25 = 24 passed + 1 unsupported), \texttt{ctest} (11/11),
+      \texttt{pytest} (89 passed), and the full lowering pipeline on both
+      examples (rc=0, 6 files each) &
+      \textbf{APPROVE} \\
+    F2 & Code quality review &
+      \texttt{\scriptsize ses\_0361c328dffeo2zvLAMhPVZbkc} &
+      Malformed/truncated IR and malformed JSON produce clean diagnostics,
+      never crashes; codegen emits the current tt-metal API only (grep for
+      \texttt{EnqueueProgram} emission sites is zero); stubs signature-only
+      pinned \texttt{@df36cd6}; ruff advisory pass &
+      \textbf{APPROVE} \\
+    F3 & Hands-on QA &
+      \texttt{\scriptsize ses\_0361bc016ffeEqisSH5eTHC1S0} &
+      Build $\to$ lit $\to$ ctest $\to$ pytest $\to$ pipeline on both
+      examples $\to$ report regeneration (byte-identical) $\to$
+      simulator-vs-golden harness (PCC $\ge$ 0.9875 both targets, non-vacuity
+      holds) $\to$ \texttt{scripts/hw\_acceptance.sh} no-device branch $\to$
+      network-blocked Playwright render (0 requests, 6/6 anchors) &
+      \textbf{APPROVE} \\
+    F4 & Scope fidelity &
+      \texttt{\scriptsize ses\_0361b41aaffe7faVAxXHZYusN4} &
+      Adversarial greps for \texttt{cuda|nvidia}, multi-device tokens, and
+      submitted/merged-PR claims; op-zoo and \texttt{L1Model.h} constants
+      audits; DSL import audit (no \texttt{ast}/\texttt{inspect}/\texttt{torch});
+      upstream tree audit (nothing submitted, forked, or merged) &
+      \textbf{APPROVE} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The campaign's direct session
+(\texttt{ses\_0780d1f23ffeVINbwloM0T7ZwW}) is the orchestrator session shared
+across the boulder works; the four F-wave reviewers are the appended sessions
+listed above. The F3 verdict is also preserved as evidence:
+\path{.omo/evidence/task-F3-tensixflow.log} (with the two
+\texttt{task-F3-screenshot-*.png} renders) records every step's exit code, the
+captured PCC values for both targets, and the byte-identical report
+regeneration. The F1--F4 approvals are the acceptance events the plan's final
+verification wave requires.
+
+One honest sentence on this document: this report is itself a follow-up
+deliverable, written and compiled \emph{after} plan completion by a worker
+outside the boulder loop, using an ephemeral
+\texttt{nix shell nixpkgs\#texlive.combined.scheme-full} toolchain
+(\texttt{report/BUILDING.md}) that resolved against the same pinned nixpkgs
+rev without modifying the project flake, and its commit is therefore not
+counted among the 58 implementation commits of the campaign.
