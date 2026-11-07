@@ -78,6 +78,15 @@ static json::Value planToValue(const Plan &plan) {
   shardGrid["grid_y"] = plan.shardGrid.gridY;
   shardGrid["grid_x"] = plan.shardGrid.gridX;
 
+  json::Object emission;
+  emission["mapping"] = plan.emission.mapping;
+  emission["cores_used"] = plan.emission.coresUsed;
+  emission["max_tiles_per_core"] = plan.emission.maxTilesPerCore;
+  emission["dram_read_bytes"] = plan.emission.dramReadBytes;
+  emission["dram_write_bytes"] = plan.emission.dramWriteBytes;
+  emission["fused_stage_tiles"] = plan.emission.fusedStageTiles;
+  emission["fused_feasible"] = plan.emission.fusedFeasible;
+
   json::Object noc;
   noc["dram_read_bytes"] = plan.noc.dramReadBytes;
   noc["dram_write_bytes"] = plan.noc.dramWriteBytes;
@@ -105,6 +114,7 @@ static json::Value planToValue(const Plan &plan) {
   root["shard_grid"] = json::Value(std::move(shardGrid));
   root["cb_specs"] = json::Value(std::move(cbSpecs));
   root["noc"] = json::Value(std::move(noc));
+  root["emission"] = json::Value(std::move(emission));
   root["perf"] = json::Value(std::move(perf));
   root["viz"] = json::Value(std::move(viz));
   return json::Value(std::move(root));

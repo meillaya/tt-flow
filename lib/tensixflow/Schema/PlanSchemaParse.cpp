@@ -41,6 +41,10 @@ std::optional<double> reqDouble(const json::Object &obj, const char *key) {
   return obj.getNumber(key);
 }
 
+std::optional<bool> reqBool(const json::Object &obj, const char *key) {
+  return obj.getBoolean(key);
+}
+
 const json::Object *reqObject(const json::Object &obj, const char *key) {
   return obj.getObject(key);
 }
@@ -195,6 +199,46 @@ std::optional<NocEstimate> parseNoc(const json::Object &obj) {
   return noc;
 }
 
+std::optional<EmissionEstimate> parseEmission(const json::Object &obj) {
+  EmissionEstimate emission;
+  if (auto mapping = reqString(obj, "mapping")) {
+    emission.mapping = *mapping;
+  } else {
+    return std::nullopt;
+  }
+  if (auto value = reqInt(obj, "cores_used")) {
+    emission.coresUsed = *value;
+  } else {
+    return std::nullopt;
+  }
+  if (auto value = reqInt(obj, "max_tiles_per_core")) {
+    emission.maxTilesPerCore = *value;
+  } else {
+    return std::nullopt;
+  }
+  if (auto value = reqInt(obj, "dram_read_bytes")) {
+    emission.dramReadBytes = *value;
+  } else {
+    return std::nullopt;
+  }
+  if (auto value = reqInt(obj, "dram_write_bytes")) {
+    emission.dramWriteBytes = *value;
+  } else {
+    return std::nullopt;
+  }
+  if (auto value = reqInt(obj, "fused_stage_tiles")) {
+    emission.fusedStageTiles = *value;
+  } else {
+    return std::nullopt;
+  }
+  if (auto value = reqBool(obj, "fused_feasible")) {
+    emission.fusedFeasible = *value;
+  } else {
+    return std::nullopt;
+  }
+  return emission;
+}
+
 std::optional<PerfEstimate> parsePerf(const json::Object &obj) {
   PerfEstimate perf;
   if (auto value = reqInt(obj, "est_cycles")) {
@@ -339,6 +383,16 @@ std::optional<Plan> parsePlan(const json::Value &value) {
   }
   if (auto parsed = parseNoc(*noc)) {
     plan.noc = *parsed;
+  } else {
+    return std::nullopt;
+  }
+
+  const json::Object *emission = reqObject(*root, "emission");
+  if (!emission) {
+    return std::nullopt;
+  }
+  if (auto parsed = parseEmission(*emission)) {
+    plan.emission = *parsed;
   } else {
     return std::nullopt;
   }

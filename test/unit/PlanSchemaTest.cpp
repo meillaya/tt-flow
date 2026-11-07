@@ -2,11 +2,11 @@
 //
 // Unit tests for the TensixFlow plan/perf/viz JSON schema:
 //   1. RoundTrip          - serialize a sample plan, re-parse field-for-field,
-//                           including the required device block.
+//                           including the required device and emission blocks.
 //   2. ConformsToSchema   - validate the sample against schema/plan.schema.json.
-//   3. RejectsMissingField - a missing required field, including the device
-//                           block, is rejected by parsePlan and by the schema
-//                           validator.
+//   3. RejectsMissingField - a missing required field, including the device and
+//                           emission blocks, is rejected by parsePlan and by
+//                           the schema validator.
 //
 //===----------------------------------------------------------------------===//
 
@@ -68,6 +68,13 @@ Plan makeSamplePlan() {
   plan.noc.dramWriteBytes = 1073741824LL;
   plan.noc.l1Bytes = 536870912LL;
   plan.noc.multicastBytes = 268435456LL;
+  plan.emission.mapping = "output-tile-ranges";
+  plan.emission.coresUsed = 64;
+  plan.emission.maxTilesPerCore = 4;
+  plan.emission.dramReadBytes = 2147483648LL;
+  plan.emission.dramWriteBytes = 1073741824LL;
+  plan.emission.fusedStageTiles = 32;
+  plan.emission.fusedFeasible = true;
   plan.perf.estCycles = 1234567LL;
   plan.perf.computeUtil = 0.75;
   plan.perf.bottleneck = "memory";
@@ -190,6 +197,19 @@ TEST(PlanSchemaTest, RoundTrip) {
   EXPECT_EQ(reparsed->noc.l1Bytes, original.noc.l1Bytes);
   EXPECT_EQ(reparsed->noc.multicastBytes, original.noc.multicastBytes);
 
+  EXPECT_EQ(reparsed->emission.mapping, original.emission.mapping);
+  EXPECT_EQ(reparsed->emission.coresUsed, original.emission.coresUsed);
+  EXPECT_EQ(reparsed->emission.maxTilesPerCore,
+            original.emission.maxTilesPerCore);
+  EXPECT_EQ(reparsed->emission.dramReadBytes,
+            original.emission.dramReadBytes);
+  EXPECT_EQ(reparsed->emission.dramWriteBytes,
+            original.emission.dramWriteBytes);
+  EXPECT_EQ(reparsed->emission.fusedStageTiles,
+            original.emission.fusedStageTiles);
+  EXPECT_EQ(reparsed->emission.fusedFeasible,
+            original.emission.fusedFeasible);
+
   EXPECT_EQ(reparsed->perf.estCycles, original.perf.estCycles);
   EXPECT_DOUBLE_EQ(reparsed->perf.computeUtil, original.perf.computeUtil);
   EXPECT_EQ(reparsed->perf.bottleneck, original.perf.bottleneck);
@@ -255,6 +275,35 @@ TEST(PlanSchemaTest, RejectsMissingField) {
   validateAgainstSchema(*schema, *withoutDevice, "$", deviceErrors);
   EXPECT_FALSE(deviceErrors.empty())
       << "schema validator must flag the missing device block";
+
+  // The emission block is required too: the plan JSON records the projected
+  // emitted-path accounting, so a plan without it is rejected at both seams.
+  std::optional<json::Value> withoutEmission =
+      parseText(toJson(makeSamplePlan()));
+  ASSERT_TRUE(withoutEmission.has_value());
+  json::Object *withoutEmissionObj = withoutEmission->getAsObject();
+  ASSERT_NE(withoutEmissionObj, nullptr);
+  ASSERT_TRUE(withoutEmissionObj->erase("emission"));
+  EXPECT_FALSE(parsePlan(*withoutEmission).has_value())
+      << "parsePlan must reject a plan missing the emission block";
+  std::vector<std::string> emissionErrors;
+  validateAgainstSchema(*schema, *withoutEmission, "$", emissionErrors);
+  EXPECT_FALSE(emissionErrors.empty())
+      << "schema validator must flag the missing emission block";
+
+  // A required field inside the emission block is rejected field-for-field.
+  std::optional<json::Value> badEmission =
+      parseText(toJson(makeSamplePlan()));
+  ASSERT_TRUE(badEmission.has_value());
+  json::Object *badEmissionObj = badEmission->getAsObject();
+  ASSERT_NE(badEmissionObj, nullptr);
+  json::Value *emissionValue = badEmissionObj->get("emission");
+  ASSERT_NE(emissionValue, nullptr);
+  json::Object *emissionObj = emissionValue->getAsObject();
+  ASSERT_NE(emissionObj, nullptr);
+  ASSERT_TRUE(emissionObj->erase("fused_feasible"));
+  EXPECT_FALSE(parsePlan(*badEmission).has_value())
+      << "parsePlan must reject an emission block missing fused_feasible";
 }
 
 } // namespace

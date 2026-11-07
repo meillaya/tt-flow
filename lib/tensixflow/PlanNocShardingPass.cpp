@@ -28,6 +28,7 @@
 #include "tensixflow/TensixflowOps.h"
 
 #include "DeviceSelection.h"
+#include "EmissionEstimator.h"
 #include "Model.h"
 #include "PlanReport.h"
 
@@ -67,6 +68,47 @@ scheduler::TensorShape tensorShapeOf(Value value, const std::string &name) {
     shape.dtype = dtypeString(ranked.getElementType());
   }
   return shape;
+}
+
+/// Ceiling division for the tile decomposition, guarded for a non-positive
+/// divisor.
+int64_t ceilDiv(int64_t numerator, int64_t divisor) {
+  if (numerator <= 0 || divisor <= 0) {
+    return 0;
+  }
+  return (numerator + divisor - 1) / divisor;
+}
+
+/// The matmul tile geometry the emitted-path accounting needs. The matmul treats
+/// the activation as [..., M, K] and the weight as [K, N], the same convention
+/// --tensixflow-lower-to-ttkernel uses when it builds the schedule IR.
+struct MatmulTiles {
+  int64_t m = 0;
+  int64_t n = 0;
+  int64_t k = 0;
+};
+
+MatmulTiles matmulTiles(const scheduler::TensorShape &activation,
+                        const scheduler::TensorShape &weight,
+                        const device::DeviceSpec &deviceSpec) {
+  MatmulTiles tiles;
+  int64_t m = 0;
+  int64_t k = 0;
+  int64_t n = 0;
+  if (activation.dims.size() >= 2) {
+    k = activation.dims.back();
+    m = 1;
+    for (size_t i = 0; i + 1 < activation.dims.size(); ++i) {
+      m *= activation.dims[i];
+    }
+  }
+  if (!weight.dims.empty()) {
+    n = weight.dims.back();
+  }
+  tiles.m = ceilDiv(m, deviceSpec.tileHeight);
+  tiles.n = ceilDiv(n, deviceSpec.tileWidth);
+  tiles.k = ceilDiv(k, deviceSpec.tileWidth);
+  return tiles;
 }
 
 /// Resolve the device for this module: the stamped attribute wins, then the
@@ -209,6 +251,31 @@ public:
         report.noc.savedDramReadBytes, report.noc.savedDramWriteBytes,
         report.noc.savedIntermediateBytes);
     module->setAttr("tensixflow.schedule", schedule);
+
+    // Record the emitted-path accounting. The Metalium emitter requires this
+    // block: it is the plan-side record of the traffic and work split the
+    // emitted program will produce, computed from the same tile geometry the
+    // lowering pass uses.
+    const MatmulTiles tiles =
+        matmulTiles(request.activation, request.weight, *report.device);
+    scheduler::EmissionInputs emissionInputs;
+    emissionInputs.mTiles = tiles.m;
+    emissionInputs.nTiles = tiles.n;
+    emissionInputs.kTiles = tiles.k;
+    emissionInputs.gridY = report.plan.shardGrid.gridY;
+    emissionInputs.gridX = report.plan.shardGrid.gridX;
+    emissionInputs.tileBytes = report.device->tileBytes;
+    emissionInputs.cbBudgetBytes =
+        report.device->cbBudget(device::kDefaultL1ReserveBytes);
+    const scheduler::EmissionPlan emission =
+        scheduler::estimateEmission(emissionInputs);
+    module->setAttr(
+        scheduler::kEmissionAttrName,
+        TensixflowEmissionAttr::get(
+            ctx, StringAttr::get(ctx, emission.mapping), emission.coresUsed,
+            emission.maxTilesPerCore, emission.dramReadBytes,
+            emission.dramWriteBytes, emission.fusedStageTiles,
+            emission.fusedFeasible));
 
     llvm::errs() << scheduler::formatPlanReport(report);
   }

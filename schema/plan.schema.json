@@ -13,6 +13,7 @@
     "shard_grid",
     "cb_specs",
     "noc",
+    "emission",
     "perf",
     "viz"
   ],
@@ -130,6 +131,29 @@
         "dram_write_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM write traffic (bytes)." },
         "l1_bytes": { "type": "integer", "format": "int64", "description": "Projected L1 traffic (bytes)." },
         "multicast_bytes": { "type": "integer", "format": "int64", "description": "Projected NoC multicast traffic (bytes)." }
+      }
+    },
+    "emission": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Projected emitted-path accounting: what the emitted TT-Metalium program will do with the plan's tile geometry. Every value is projected from static shapes, never measured.",
+      "required": [
+        "mapping",
+        "cores_used",
+        "max_tiles_per_core",
+        "dram_read_bytes",
+        "dram_write_bytes",
+        "fused_stage_tiles",
+        "fused_feasible"
+      ],
+      "properties": {
+        "mapping": { "type": "string", "description": "Output-tile mapping name. The emitter supports \"output-tile-ranges\": each core owns a contiguous range of linear output-tile ids." },
+        "cores_used": { "type": "integer", "format": "int64", "description": "Cores the emitted program assigns output tiles to: min(grid cores, output tiles)." },
+        "max_tiles_per_core": { "type": "integer", "format": "int64", "description": "Largest number of output tiles one core owns: ceil(output tiles / cores used)." },
+        "dram_read_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM read bytes of the emitted program: output tiles * K tiles * 2 * tile bytes. Unicast with no tile reuse across output tiles, so this is an upper bound." },
+        "dram_write_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM write bytes of the emitted program: output tiles * tile bytes." },
+        "fused_stage_tiles": { "type": "integer", "format": "int64", "description": "Tiles a fused variant would stage per core: max rows per core * K tiles." },
+        "fused_feasible": { "type": "boolean", "description": "True when a fused variant would fit the per-core circular-buffer budget." }
       }
     },
     "perf": {

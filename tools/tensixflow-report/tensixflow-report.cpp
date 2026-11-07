@@ -29,6 +29,7 @@
 #include "PerfModel.h"
 
 #include "DeviceSelection.h"
+#include "EmissionEstimator.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorOr.h"
@@ -83,6 +84,110 @@ Plan selectPerfInput(const Plan &plan) {
     perfPlan.tensors.push_back(plan.tensors[1]);
   }
   return perfPlan;
+}
+
+/// Derive the matmul tile geometry from a plan: the activation tensor is
+/// tensors[0] (as in selectPerfInput), [..., M, K], and the weight is the
+/// rank>=2 tensor with the most elements, [K, N]. Returns false when the plan
+/// does not carry both shapes, which makes the emission block unverifiable.
+bool matmulTilesFromPlan(const Plan &perfPlan, const device::DeviceSpec &spec,
+                         scheduler::EmissionInputs &inputs) {
+  if (perfPlan.tensors.size() < 2) {
+    return false;
+  }
+  const TensorDesc &activation = perfPlan.tensors[0];
+  const TensorDesc &weight = perfPlan.tensors[1];
+  if (activation.shape.size() < 2 || weight.shape.size() < 2) {
+    return false;
+  }
+  int64_t m = 1;
+  int64_t k = activation.shape.back();
+  for (size_t i = 0; i + 1 < activation.shape.size(); ++i) {
+    m *= activation.shape[i];
+  }
+  const int64_t n = weight.shape.back();
+  const int64_t tileHeight = spec.tileHeight;
+  const int64_t tileWidth = spec.tileWidth;
+  inputs.mTiles = (m + tileHeight - 1) / tileHeight;
+  inputs.nTiles = (n + tileWidth - 1) / tileWidth;
+  inputs.kTiles = (k + tileWidth - 1) / tileWidth;
+  inputs.tileBytes = spec.tileBytes;
+  inputs.cbBudgetBytes = spec.cbBudget(device::kDefaultL1ReserveBytes);
+  return true;
+}
+
+/// Validate the emission block: the mapping must be one the emitter supports,
+/// the work split must fit the plan grid, and every byte count must match the
+/// projection from the plan's own tile geometry. A stale or hand-edited block
+/// is an error rather than a rendered guess.
+bool validateEmission(const Plan &plan, const Plan &perfPlan,
+                      const device::DeviceSpec &spec, std::string &error) {
+  const EmissionEstimate &emission = plan.emission;
+  if (emission.mapping != scheduler::kOutputTileRangesMapping) {
+    error = "emission mapping '" + emission.mapping +
+            "' is not one the emitter supports; expected '" +
+            scheduler::kOutputTileRangesMapping + "'";
+    return false;
+  }
+  const int64_t gridCores = plan.shardGrid.gridY * plan.shardGrid.gridX;
+  if (emission.coresUsed < 1 || emission.coresUsed > gridCores) {
+    error = "emission.cores_used " + std::to_string(emission.coresUsed) +
+            " is outside the plan grid's 1.." + std::to_string(gridCores) +
+            " cores";
+    return false;
+  }
+  if (emission.maxTilesPerCore < 1) {
+    error = "emission.max_tiles_per_core must be positive";
+    return false;
+  }
+  if (emission.dramReadBytes <= 0 || emission.dramWriteBytes <= 0) {
+    error = "emission DRAM byte counts must be positive";
+    return false;
+  }
+
+  scheduler::EmissionInputs inputs;
+  if (!matmulTilesFromPlan(perfPlan, spec, inputs)) {
+    error = "the plan does not carry the activation and weight shapes needed "
+            "to validate the emission block";
+    return false;
+  }
+  inputs.gridY = plan.shardGrid.gridY;
+  inputs.gridX = plan.shardGrid.gridX;
+  const scheduler::EmissionPlan expected = scheduler::estimateEmission(inputs);
+  if (emission.coresUsed != expected.coresUsed) {
+    error = "emission.cores_used is " + std::to_string(emission.coresUsed) +
+            ", projected " + std::to_string(expected.coresUsed);
+    return false;
+  }
+  if (emission.maxTilesPerCore != expected.maxTilesPerCore) {
+    error = "emission.max_tiles_per_core is " +
+            std::to_string(emission.maxTilesPerCore) + ", projected " +
+            std::to_string(expected.maxTilesPerCore);
+    return false;
+  }
+  if (emission.dramReadBytes != expected.dramReadBytes) {
+    error = "emission.dram_read_bytes is " +
+            std::to_string(emission.dramReadBytes) + ", projected " +
+            std::to_string(expected.dramReadBytes);
+    return false;
+  }
+  if (emission.dramWriteBytes != expected.dramWriteBytes) {
+    error = "emission.dram_write_bytes is " +
+            std::to_string(emission.dramWriteBytes) + ", projected " +
+            std::to_string(expected.dramWriteBytes);
+    return false;
+  }
+  if (emission.fusedStageTiles != expected.fusedStageTiles) {
+    error = "emission.fused_stage_tiles is " +
+            std::to_string(emission.fusedStageTiles) + ", projected " +
+            std::to_string(expected.fusedStageTiles);
+    return false;
+  }
+  if (emission.fusedFeasible != expected.fusedFeasible) {
+    error = "emission.fused_feasible does not match the projection";
+    return false;
+  }
+  return true;
 }
 
 /// Escape `</` as `<\/` so the embedded JSON literal can never close the
@@ -162,10 +267,23 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // The perf model reads the activation and weight operands; selecting them
+  // once gives both the perf fill and the emission validation the same view.
+  Plan perfPlan = selectPerfInput(plan);
+
+  // Validate the required emitted-path block against the plan's own geometry
+  // before rendering it.
+  std::string emissionError;
+  if (!validateEmission(plan, perfPlan, *deviceSpec, emissionError)) {
+    llvm::errs() << "error: " << in << " has an invalid emission block: "
+                 << emissionError << "\n";
+    return 1;
+  }
+
   // Fill the perf section from the static projection model so the rendered
   // #bottlenecks is meaningful regardless of the input's placeholder perf.
   plan.perf = analysis::toPerfEstimate(
-      analysis::estimatePerf(selectPerfInput(plan), *deviceSpec));
+      analysis::estimatePerf(perfPlan, *deviceSpec));
 
   std::error_code errorCode;
   llvm::raw_fd_ostream file(out, errorCode);

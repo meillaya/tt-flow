@@ -227,6 +227,80 @@ void TensixflowScheduleAttr::print(AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
+// TensixflowEmissionAttr custom assembly format.
+//===----------------------------------------------------------------------===//
+//
+//   emission-attr ::= `#tensixflow.emission` `<`
+//                       `mapping` string `,`
+//                       `cores_used` int `,`
+//                       `max_tiles_per_core` int `,`
+//                       `dram_read` int `,` `dram_write` int `,`
+//                       `fused_stage_tiles` int `,`
+//                       `fused_feasible` (`true` | `false`)
+//                     `>`
+//
+// The `#tensixflow.emission` mnemonic is consumed/emitted by the dialect
+// dispatch (useDefaultAttributePrinterParser); parse/print below handle the
+// `< ... >` body. Example:
+//
+//   #tensixflow.emission<mapping "output-tile-ranges", cores_used 64,
+//     max_tiles_per_core 4, dram_read 16777216, dram_write 524288,
+//     fused_stage_tiles 32, fused_feasible true>
+
+Attribute TensixflowEmissionAttr::parse(AsmParser &parser, Type type) {
+  if (type) {
+    parser.emitError(parser.getNameLoc(),
+                     "emission attribute does not take a type");
+    return Attribute();
+  }
+
+  std::string mapping;
+  int64_t coresUsed = 0, maxTilesPerCore = 0;
+  int64_t dramRead = 0, dramWrite = 0, fusedStageTiles = 0;
+  bool fusedFeasible = false;
+  StringRef feasibleKeyword;
+  if (parser.parseLess() || parser.parseKeyword("mapping") ||
+      parser.parseString(&mapping) || parser.parseComma() ||
+      parser.parseKeyword("cores_used") || parser.parseInteger(coresUsed) ||
+      parser.parseComma() || parser.parseKeyword("max_tiles_per_core") ||
+      parser.parseInteger(maxTilesPerCore) || parser.parseComma() ||
+      parser.parseKeyword("dram_read") || parser.parseInteger(dramRead) ||
+      parser.parseComma() || parser.parseKeyword("dram_write") ||
+      parser.parseInteger(dramWrite) || parser.parseComma() ||
+      parser.parseKeyword("fused_stage_tiles") ||
+      parser.parseInteger(fusedStageTiles) || parser.parseComma() ||
+      parser.parseKeyword("fused_feasible") ||
+      parser.parseKeyword(&feasibleKeyword) || parser.parseGreater())
+    return Attribute();
+
+  if (feasibleKeyword == "true") {
+    fusedFeasible = true;
+  } else if (feasibleKeyword == "false") {
+    fusedFeasible = false;
+  } else {
+    parser.emitError(parser.getNameLoc(),
+                     "invalid fused_feasible keyword '" + feasibleKeyword +
+                         "', expected true or false");
+    return Attribute();
+  }
+
+  MLIRContext *ctx = parser.getContext();
+  return TensixflowEmissionAttr::get(
+      ctx, StringAttr::get(ctx, mapping), coresUsed, maxTilesPerCore, dramRead,
+      dramWrite, fusedStageTiles, fusedFeasible);
+}
+
+void TensixflowEmissionAttr::print(AsmPrinter &printer) const {
+  printer << "<mapping ";
+  printer.printString(getMapping().getValue());
+  printer << ", cores_used " << getCoresUsed() << ", max_tiles_per_core "
+          << getMaxTilesPerCore() << ", dram_read " << getDramReadBytes()
+          << ", dram_write " << getDramWriteBytes() << ", fused_stage_tiles "
+          << getFusedStageTiles() << ", fused_feasible "
+          << (getFusedFeasible() ? "true" : "false") << ">";
+}
+
+//===----------------------------------------------------------------------===//
 // Tensixflow dialect.
 //===----------------------------------------------------------------------===//
 
@@ -244,5 +318,6 @@ void TensixflowDialect::initialize() {
 #define GET_OP_LIST
 #include "tensixflow/TensixflowSchedule.cpp.inc"
       >();
-  addAttributes<TensixflowTileLayoutAttr, TensixflowScheduleAttr>();
+  addAttributes<TensixflowTileLayoutAttr, TensixflowScheduleAttr,
+                TensixflowEmissionAttr>();
 }

@@ -62,10 +62,10 @@ ul.suggestions li { margin: 4px 0; }
 .muted { color: #8b949e; }
 )tfcss";
 
-// The six section containers. The id attributes are the required anchors
-// (#core-grid #shards #noc-routes #cb-usage #timeline #bottlenecks); the static
-// markup keeps the anchors present even before the JS runs, and the JS fills
-// each section's .body div from the embedded PLAN.
+// The seven section containers. The id attributes are the required anchors
+// (#core-grid #shards #noc-routes #emitted-path #cb-usage #timeline
+// #bottlenecks); the static markup keeps the anchors present even before the JS
+// runs, and the JS fills each section's .body div from the embedded PLAN.
 constexpr const char kSections[] = R"tfhtml(
 <header>
   <h1>TensixFlow Plan Report</h1>
@@ -75,6 +75,7 @@ constexpr const char kSections[] = R"tfhtml(
   <section class="panel" id="core-grid"><h2>Core Grid</h2><div class="body"></div></section>
   <section class="panel" id="shards"><h2>Tensor Shards</h2><div class="body"></div></section>
   <section class="panel" id="noc-routes"><h2>NoC Routes</h2><div class="body"></div></section>
+  <section class="panel" id="emitted-path"><h2>Projected Emitted Path</h2><div class="body"></div></section>
   <section class="panel" id="cb-usage"><h2>Circular Buffer Usage</h2><div class="body"></div></section>
   <section class="panel" id="timeline"><h2>Kernel Pipeline Timeline</h2><div class="body"></div></section>
   <section class="panel" id="bottlenecks"><h2>Projected Bottlenecks</h2><div class="body"></div></section>
@@ -82,7 +83,7 @@ constexpr const char kSections[] = R"tfhtml(
 )tfhtml";
 
 // Vanilla inline JS (no framework). Statically renders the embedded PLAN into
-// the six section bodies on load. No event handlers, no fetch, no import, no
+// the seven section bodies on load. No event handlers, no fetch, no import, no
 // eval, no animation. BUDGET is the device's usable L1 bytes per core from the
 // plan's device block; occupancy is projected against that ceiling, not against
 // a hand-written number.
@@ -126,6 +127,19 @@ constexpr const char kJs[] = R"tfjs(
   if (noc.multicast_bytes > 0) { h += ' | projected multicast: weight tiles fanned out across rows via row master nodes'; }
   h += '</p>';
   body('noc-routes').innerHTML = h;
+
+  var em = plan.emission;
+  h = '<p class="cap">the emitted program assigns output tiles to cores in contiguous row-major ranges (' + esc(em.mapping) + ')</p>';
+  h += '<table><thead><tr><th>projected emitted-path item</th><th class="num">value</th></tr></thead><tbody>';
+  h += '<tr><td>cores used</td><td class="num">' + fmt(em.cores_used) + '</td></tr>';
+  h += '<tr><td>max output tiles per core</td><td class="num">' + fmt(em.max_tiles_per_core) + '</td></tr>';
+  h += '<tr><td>DRAM read bytes</td><td class="num">' + fmt(em.dram_read_bytes) + '</td></tr>';
+  h += '<tr><td>DRAM write bytes</td><td class="num">' + fmt(em.dram_write_bytes) + '</td></tr>';
+  h += '<tr><td>fused stage tiles</td><td class="num">' + fmt(em.fused_stage_tiles) + '</td></tr>';
+  h += '<tr><td>fused variant feasible</td><td class="num">' + (em.fused_feasible ? 'yes' : 'no') + '</td></tr>';
+  h += '</tbody></table>';
+  h += '<p class="flow">projected emitted-path reads are unicast and replicated per output tile: each core reads the A and B tiles of every output tile it owns, a tile in K is re-read per output row, and no reuse across output tiles is modeled. The read figure is an upper bound, not a measured count.</p>';
+  body('emitted-path').innerHTML = h;
 
   var cbs = plan.cb_specs, total = 0;
   h = '<table><thead><tr><th>CB index</th><th class="num">depth (tiles)</th><th class="num">tile bytes</th><th class="num">bytes</th></tr></thead><tbody>';

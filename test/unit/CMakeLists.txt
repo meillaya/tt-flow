@@ -165,3 +165,15 @@ target_link_libraries(PerfModelTest PRIVATE
 )
 
 add_test(NAME perf_model COMMAND PerfModelTest)
+
+# Emitted-path accounting test. EmissionEstimator.h is pure data and math over
+# the scheduler model, so the test links the scheduler library and LLVMSupport.
+add_executable(EmissionEstimatorTest EmissionEstimatorTest.cpp)
+target_link_libraries(EmissionEstimatorTest PRIVATE
+  MLIRTensixflowScheduler
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME emission_estimator COMMAND EmissionEstimatorTest)

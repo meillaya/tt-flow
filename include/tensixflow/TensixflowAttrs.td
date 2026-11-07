@@ -129,4 +129,45 @@ def Tensixflow_ScheduleAttr : AttrDef<Tensixflow_Dialect, "TensixflowSchedule"> 
   let hasCustomAssemblyFormat = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// Tensixflow emitted-path (emission) attribute.
+//===----------------------------------------------------------------------===//
+//
+// Assembly format (custom, round-trips):
+//
+//   #tensixflow.emission<mapping "output-tile-ranges", cores_used 64,
+//     max_tiles_per_core 4, dram_read 16777216, dram_write 524288,
+//     fused_stage_tiles 32, fused_feasible true>
+//
+// `mapping` names how the emitted program assigns output tiles to cores;
+// `cores_used` and `max_tiles_per_core` record the work split; the two byte
+// counts are the projected DRAM traffic of the emitted program; the last two
+// fields record whether a fused variant of the same matmul would fit the
+// per-core circular-buffer budget. Every value is projected from static shapes.
+
+def Tensixflow_EmissionAttr : AttrDef<Tensixflow_Dialect, "TensixflowEmission"> {
+  let summary = "Projected emitted-path accounting: mapping, work split, traffic";
+  let mnemonic = "emission";
+  let description = [{
+    A structured attribute recording what the emitted TT-Metalium program will
+    do with the plan's tile geometry: the output-tile mapping name, the number
+    of cores the tiles are spread over, the largest number of output tiles one
+    core owns, the projected DRAM read and write bytes (unicast, with no tile
+    reuse across output tiles), and whether a fused variant of the same matmul
+    would fit the per-core circular-buffer budget. Attached to the module by
+    --tensixflow-plan-noc-sharding. The emitter requires it, and the plan JSON
+    carries it as the required emission object.
+  }];
+  let parameters = (ins
+    "::mlir::StringAttr":$mapping,
+    "int64_t":$coresUsed,
+    "int64_t":$maxTilesPerCore,
+    "int64_t":$dramReadBytes,
+    "int64_t":$dramWriteBytes,
+    "int64_t":$fusedStageTiles,
+    "bool":$fusedFeasible
+  );
+  let hasCustomAssemblyFormat = 1;
+}
+
 #endif // TENSIXFLOW_ATTRS

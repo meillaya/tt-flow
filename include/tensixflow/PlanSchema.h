@@ -72,6 +72,21 @@ struct CBSpec {
   int64_t tileBytes = 0;
 };
 
+/// Projected emitted-path accounting: what the emitted TT-Metalium program will
+/// do with the plan's tile geometry. Every value is projected from static
+/// shapes, never measured. The mapping names how output tiles are assigned to
+/// cores; the two byte counts model unicast reads with no tile reuse across
+/// output tiles.
+struct EmissionEstimate {
+  std::string mapping;
+  int64_t coresUsed = 0;
+  int64_t maxTilesPerCore = 0;
+  int64_t dramReadBytes = 0;
+  int64_t dramWriteBytes = 0;
+  int64_t fusedStageTiles = 0;
+  bool fusedFeasible = false;
+};
+
 /// Static NoC traffic estimate, in bytes.
 struct NocEstimate {
   int64_t dramReadBytes = 0;
@@ -108,6 +123,7 @@ struct Plan {
   ShardGrid shardGrid;
   std::vector<CBSpec> cbSpecs;
   NocEstimate noc;
+  EmissionEstimate emission;
   PerfEstimate perf;
   VizSections viz;
 };
@@ -118,8 +134,8 @@ std::string toJson(const Plan &plan);
 
 /// Parse a plan field-for-field from a JSON value. Returns std::nullopt if the
 /// value is not an object or any required field is missing or wrongly typed.
-/// A malformed plan, including one without a device block, is rejected rather
-/// than defaulted.
+/// A malformed plan, including one without a device block or emission block,
+/// is rejected rather than defaulted.
 std::optional<Plan> parsePlan(const llvm::json::Value &value);
 
 } // namespace tensixflow

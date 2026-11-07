@@ -33,6 +33,7 @@
 #include "tensixflow/TensixflowOps.h"
 
 #include "DeviceSelection.h"
+#include "EmissionEstimator.h"
 
 using namespace mlir;
 
@@ -172,6 +173,31 @@ LogicalResult planToJson(Operation *op,
   noc["l1_bytes"] = schedule.getL1Bytes();
   noc["multicast_bytes"] = schedule.getMulticastBytes();
   root["noc"] = json::Value(std::move(noc));
+
+  // The emitted-path block: required by schema/plan.schema.json because the
+  // emitted program is what the plan ultimately produces. It is stamped by
+  // --tensixflow-plan-noc-sharding; a module with a schedule but no emission
+  // block predates that pass or was hand-built, so serialize nothing and say
+  // which pass is missing instead of inventing the accounting.
+  auto emission = op->getAttrOfType<
+      mlir::tensixflow::TensixflowEmissionAttr>(
+      mlir::tensixflow::scheduler::kEmissionAttrName);
+  if (!emission) {
+    op->emitError("the schedule attribute has no ")
+        << mlir::tensixflow::scheduler::kEmissionAttrName
+        << " block; run --tensixflow-plan-noc-sharding before "
+           "--tensixflow-to-json";
+    return failure();
+  }
+  json::Object emissionBlock;
+  emissionBlock["mapping"] = emission.getMapping().getValue().str();
+  emissionBlock["cores_used"] = emission.getCoresUsed();
+  emissionBlock["max_tiles_per_core"] = emission.getMaxTilesPerCore();
+  emissionBlock["dram_read_bytes"] = emission.getDramReadBytes();
+  emissionBlock["dram_write_bytes"] = emission.getDramWriteBytes();
+  emissionBlock["fused_stage_tiles"] = emission.getFusedStageTiles();
+  emissionBlock["fused_feasible"] = emission.getFusedFeasible();
+  root["emission"] = json::Value(std::move(emissionBlock));
 
   // Placeholder perf block. The translate tool reports the plan it was given;
   // tensixflow-report recomputes this section from the device data. The neutral

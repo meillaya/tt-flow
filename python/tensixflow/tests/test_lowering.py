@@ -11,6 +11,7 @@ pass reimplemented in Python (the built binaries do the work).
 
 Covers:
   * happy path: plan JSON has ``weight_strategy`` (+ fusion / shard_grid / cb_specs)
+    and the required emitted-path ``emission`` block
     AND a simulator result array of the right shape (bf16-representable, finite);
   * the built MLIR text is the real fused func (rmsnorm + matmul);
   * a rank-3 batched activation is flattened for the rank-2 simulator contract;
@@ -80,6 +81,21 @@ def test_plan_json_has_weight_strategy(lowered):
     # The acceptance field: the plan JSON carries weight_strategy, a valid strategy.
     assert "weight_strategy" in lowered.plan
     assert lowered.plan["weight_strategy"] in {"replicate", "shard", "multicast"}
+
+
+def test_plan_json_has_emission_block(lowered):
+    # The emitted-path accounting for the M=K=N=64 example: 2 x 2 output tiles
+    # over the 8 x 8 n150 grid use 4 cores with one output tile each. The read
+    # figure counts the K activation and K weight tiles of every output tile,
+    # unicast, with no reuse across output tiles.
+    emission = lowered.plan["emission"]
+    assert emission["mapping"] == "output-tile-ranges"
+    assert emission["cores_used"] == 4
+    assert emission["max_tiles_per_core"] == 1
+    assert emission["dram_read_bytes"] == 4 * 2 * 2 * 2048
+    assert emission["dram_write_bytes"] == 4 * 2048
+    assert emission["fused_stage_tiles"] == 4
+    assert emission["fused_feasible"] is True
 
 
 def test_plan_json_has_fusion_grid_and_cbs(lowered):

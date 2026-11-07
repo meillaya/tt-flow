@@ -15,6 +15,7 @@ add_library(MLIRTensixflowScheduler STATIC
   WeightPlanner.cpp
   CBAllocator.cpp
   NoCEstimator.cpp
+  EmissionEstimator.cpp
   PlanReport.cpp
 )
 
