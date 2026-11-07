@@ -14,6 +14,7 @@ The translate step must run before `--tensixflow-lower-to-ttkernel`, because the
 | `layout` | object | yes | Activation sharding and weight distribution. |
 | `shard_grid` | object | yes | Core grid the plan maps onto. |
 | `cb_specs` | array of objects | yes | Circular-buffer allocations. |
+| `emission` | object | yes | Projected cost of the emitted program. See [emission block](#emission-block). |
 | `noc` | object | yes | Projected NoC traffic in bytes. |
 | `perf` | object | yes | Projected roofline result. |
 | `viz` | object | yes | Visualizer section placeholders. |
@@ -33,6 +34,31 @@ Six user-facing report fields are optional at the top level: `activation_shardin
 | `dram_bandwidth_bytes_per_second` | integer | Board DRAM bandwidth. |
 
 The block carries the values the projection needs and that the plan cannot inherit from the file system. Clock, NoC rate, tile size, and the circular-buffer budget stay out of the JSON: `tensixflow-report` resolves the full spec by name from the generated device table. A plan whose `name` is not in that table is rejected with the valid names.
+
+## Emission block
+
+The emission block describes the program the Metalium emitter writes. It is separate from `noc` and `perf` because the emitted mapping is simpler than the planner's strategy: output tiles are split into contiguous ranges over the plan grid, and every core reads the operand tiles its output tiles need directly from DRAM with no multicast and no reuse.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `mapping` | string | Mapping name. The only supported value is `output-tile-ranges`. |
+| `cores_used` | integer | `min(grid cores, mTiles * nTiles)`. |
+| `max_tiles_per_core` | integer | `ceil(mTiles * nTiles / cores_used)`. |
+| `dram_read_bytes` | integer | Upper bound: `mTiles * nTiles * kTiles * 2 * 2048`, one activation tile and one weight tile per output tile per reduction step. |
+| `dram_write_bytes` | integer | `mTiles * nTiles * 2048`, one output tile each. |
+| `fused_stage_tiles` | integer | `max_rows_per_core * kTiles`, the activation tiles a core stages in L1 for the fused path. |
+| `fused_feasible` | boolean | True when `2 * fused_stage_tiles + 2 * kTiles + 3` tiles fit the per-core circular-buffer budget. The count covers the staged activation, the normalized activation, the weight, the gamma, one scaler tile, and two output tiles. |
+
+The values are projections of the emitted access pattern. They are expected to be larger than the planned NoC traffic, because the plan models weight multicast and the emitted program does not. The report labels both, and `docs/performance.md` explains where each is used.
+
+## Circular-buffer roles
+
+The allocation is an ordered array. The Metalium emitter and the lowering pass read roles by position, not by index value.
+
+- Unfused matmul plan: `[activation, weight, output]`, default indices `c_0`, `c_1`, `c_16`.
+- Fused RMSNorm plan: `[activation stage, weight, gamma, scaler, normalized activation, output]`, default indices `c_0`, `c_1`, `c_2`, `c_3`, `c_4`, `c_16`.
+
+A fused plan whose staged activation does not fit the budget is still a valid plan. Its emission block carries `fused_feasible: false`, and the emitter refuses to write a project with a diagnostic that prints the required and available tile counts.
 
 ## Nested objects
 
@@ -89,7 +115,7 @@ All four values are projected bytes from the static NoC estimator for the fused 
 
 [performance.md](performance.md) gives the formulas and constants behind these fields.
 
-`tensixflow-translate` writes a placeholder `perf` block (zero cycles, zero utilization, `memory`, no suggestions). `tensixflow-report` replaces it with the model's projection before rendering, so only the report output carries the projected values. A plan file produced by the translate step alone is a valid plan with an unfilled projection, not a measurement.
+`tensixflow-translate` writes a placeholder `perf` block (zero cycles, zero utilization, `balanced`, no suggestions). `tensixflow-report` replaces it with the model's projection before rendering, so only the report output carries the projected values. A plan file produced by the translate step alone is a valid plan with an unfilled projection, not a measurement.
 
 ### `viz`
 
@@ -103,7 +129,7 @@ All four values are projected bytes from the static NoC estimator for the fused 
 
 ## Validation
 
-`schema/plan.schema.json` sets `additionalProperties: false` at the top level and in every nested object, so an undeclared field or a wrong type is rejected. The nine top-level fields are required, and so are the seven fields of the device block. `parsePlan` enforces the same contract in C++ and returns `std::nullopt` when a required field is absent or wrongly typed. A plan without a device block is malformed, not defaulted.
+`schema/plan.schema.json` sets `additionalProperties: false` at the top level and in every nested object, so an undeclared field or a wrong type is rejected. The ten top-level fields are required, and so are the seven fields of the device block and the seven fields of the emission block. `parsePlan` enforces the same contract in C++ and returns `std::nullopt` when a required field is absent or wrongly typed. A plan without a device block or an emission block is malformed, not defaulted.
 
 `tensixflow-report` is the practical validator: it parses the plan before writing anything, so a malformed plan exits non-zero and leaves the output path untouched.
 

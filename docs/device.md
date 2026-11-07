@@ -54,7 +54,7 @@ The first run needs network. A re-run prints `cache complete` and touches nothin
 devenv shell -- bash scripts/build_generated.sh
 ```
 
-The script emits a fresh matmul project from `examples/matmul.mlir` into `build-generated/project/`, configures it with CMake against the extracted release package, compiles the host program, and links it against `libtt_metal.so`. It checks that `build-generated/project/build/tensixflow_generated` exists, prints `built` for that path, and prints the matching `run_generated.sh` command. Without `.deps/`, the script prints the fetch command and exits 0 with an explicit skip message. The link step needs `TT_METAL_SYSTEM_LINK_FLAGS`, which `devenv.nix` sets; the script fails loudly when the variable is unset.
+The script accepts either an `.mlir` input or an already-emitted project directory. With an `.mlir` input it emits a fresh project under `build-generated/<name>/`, configures it with CMake against the extracted release package, compiles the host program, and links it against `libtt_metal.so`. With a project directory it builds that tree. It checks that the binary exists, prints `built` for its path, and prints the matching `run_generated.sh` command. Without `.deps/`, the script prints the fetch command and exits 0 with an explicit skip message. The link step needs `TT_METAL_SYSTEM_LINK_FLAGS`, which `devenv.nix` sets; the script fails loudly when the variable is unset.
 
 A failure here is a compile error in the emitted C++ or a missing system dependency. Recovery: fix the emitter or the environment and re-run; the script reconfigures from scratch.
 
@@ -70,7 +70,20 @@ The simulator is the supported no-card run path. The script sources `.deps/env.s
 
 ttsim loads `soc_descriptor.yaml` from the directory that holds `libttsim_wh.so`, and `scripts/fetch_tt_metal.sh` puts the matching descriptor there. `TT_METAL_CACHE` must be writable; `.deps/env.sh` points it inside `.deps/`. A `No Physical Grouping Descriptor` warning on stderr is harmless.
 
-The default example is `examples/matmul.mlir`: M=256, N=1024, K=512, bf16, emitted on one core as 8 x 32 output tiles over 16 K-tiles. The recorded run on this machine printed `Metalium vs Golden -- PCC = 0.9890072`, printed a `TENSIXFLOW_RESULT` line with status `pass` and threshold 0.97, and the script printed `{"status":"pass","backend":"ttsim","pcc":0.9890072}` with exit 0.
+`scripts/test.sh` emits, builds, and runs every emittable example under ttsim. The runs recorded on this machine:
+
+| Example | Shape | Grid use | PCC |
+|---|---|---|---|
+| `examples/matmul.mlir` | M=256, N=1024, K=512 | 64 of 64 cores, 4 output tiles each | 0.9890072 |
+| `examples/matmul_small.mlir` | M=128, N=128, K=64 | 16 of 64 cores, 1 output tile each | 0.999301 |
+| `examples/rmsnorm_matmul_small.mlir` | M=128, N=256, K=128, fused RMSNorm | 32 of 64 cores, 1 output tile each | 0.9993997 |
+
+All three printed `{"status":"pass","backend":"ttsim"}` and exited 0. The second example covers the idle-core and uneven-split paths. The third stages the activation rows in L1, normalizes them in the compute kernel, and feeds the matmul from the normalized buffer; the large fused `examples/rmsnorm_matmul.mlir` is rejected with a diagnostic that names its 256 staged tiles, 128 weight tiles, 128 gamma tiles, and the 700 available tiles per core. Run one example directly with:
+
+```sh
+devenv shell -- bash scripts/build_generated.sh examples/matmul.mlir
+devenv shell -- bash scripts/run_generated.sh build-generated/matmul
+```
 
 As a separate check, the upstream `matmul_single_core` example from the `v0.82.0-rc2` examples deb also ran under ttsim v1.15.1 on this machine. It JIT-compiled 13 kernels, reported `Metalium vs Golden -- PCC = 0.9791022` with `Test Passed`, and exited 0.
 

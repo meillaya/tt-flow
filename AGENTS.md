@@ -34,10 +34,12 @@ python3 -m pytest python -q                      # golden, rounding, harness tes
 The emitted-project path builds against the pinned TT-Metalium release. Fetch once (see the next section), then build and run:
 
 ```sh
-devenv shell -- bash scripts/build_generated.sh  # emit, configure, compile, link
-devenv shell -- bash scripts/run_generated.sh    # run under ttsim, no card needed
-devenv shell -- bash scripts/run_generated.sh --device
+devenv shell -- bash scripts/build_generated.sh examples/matmul.mlir   # emit from an example, configure, compile, link
+devenv shell -- bash scripts/run_generated.sh build-generated/matmul   # run under ttsim, no card needed
+devenv shell -- bash scripts/run_generated.sh --device                 # run on a card
 ```
+
+`scripts/test.sh` runs every emittable example after building. The examples are `examples/matmul.mlir`, `examples/matmul_small.mlir`, and `examples/rmsnorm_matmul_small.mlir`, the emittable fused example.
 
 The last command needs a card. On a card host, probe first:
 
@@ -99,6 +101,6 @@ This machine has no Tenstorrent card. Anything that needs one is untested and mu
 
 - Hardware values come from `spec/devices.json`, which cites a source URL and a retrieval date for each figure. Do not invent a number.
 - The cost model reports projected cycles and projected traffic. Do not report them as measured performance.
-- The emitted project compiles and links against the pinned release, and its matmul program runs under ttsim. A simulator result is not a device result.
+- The emitted project compiles and links against the pinned release, and its matmul and fused programs run under ttsim. A simulator result is not a device result.
 - Do not add signature-only tt-metal stub headers or call an API the pinned release does not export. The pin in `deps/` is the only surface.
 - Documents under `docs/` state facts about the code as it is. Leave planning language, todo numbers, and decision codes out of them.

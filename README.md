@@ -2,8 +2,8 @@
 
 A compiler and device-cost planner for fused transformer kernels on Tenstorrent hardware.
 It reads MLIR, fuses RMSNorm+MatMul and MLP chains, plans the core grid and circular buffers
-against published device limits, and emits either TTIR text or a TT-Metalium project that
-builds and runs against a pinned upstream release.
+against published device limits, reports a projected cost, and emits a TT-Metalium project that
+builds against a pinned upstream release and runs on the real grid.
 
 The point is to answer two questions before you write a kernel: does the fused op fit on the
 card, and what does the schedule cost in bytes and projected cycles. With no card in the
@@ -13,10 +13,10 @@ machine, the emitted program still runs on Tenstorrent's official simulator.
 
 ## What it does
 
-The compiler takes MLIR written in a small tensor dialect, runs fusion and tile-layout
-inference, plans a core grid and circular-buffer allocation for a named device, and reports a
-projected roofline. It can stop at a plan, emit TTIR text for tt-mlir, or emit a TT-Metalium
-project with a host program and three kernels.
+The compiler takes MLIR written in its own dialect or a documented bare-tensor TTIR subset,
+runs fusion and tile-layout inference, plans a core grid and circular-buffer allocation for a
+named device, and reports a projected roofline. It can stop at a plan, emit TTIR text for
+tt-mlir, or emit a TT-Metalium project with a host program and three kernels.
 
 Build it first:
 
@@ -36,9 +36,20 @@ devenv shell -- build/bin/tensixflow-opt \
 ```
 
 The pass prints the device it planned against, the grid, weight strategy, circular-buffer
-footprint, and projected traffic for the unfused and fused paths. The default device is n150;
-n300, p100a, and p150a are accepted too. Every figure in the output comes from the published
-device data in `spec/devices.json`.
+footprint, and projected traffic for the unfused and fused paths. An upstream TTIR module enters
+the same pipeline:
+
+```sh
+devenv shell -- build/bin/tensixflow-opt \
+  --allow-unregistered-dialect \
+  --tensixflow-import-ttir \
+  --tensixflow-infer-tile-layout \
+  --tensixflow-plan-noc-sharding \
+  examples/ttir/rmsnorm_matmul.mlir
+```
+
+The default device is n150; n300, p100a, and p150a are accepted too. Every figure in the output
+comes from the published device data in `spec/devices.json`.
 
 ## Devices
 
@@ -58,50 +69,61 @@ never measured.
 
 ## Emit and run a project
 
-Emission targets a pure matmul schedule. A fused graph is planned and reported, but the
-emitter exits with a message rather than shipping a kernel it cannot check. The emitted
-project builds against the official tt-metal release recorded in `deps/tt-metal.lock`:
+Emission realizes the planned grid. The host splits the output tiles into contiguous ranges
+over the device grid, creates the three kernels on the whole range, and sets per-core start and
+count arguments. The emitted project builds against the official tt-metal release recorded in
+`deps/tt-metal.lock`:
 
 ```sh
-devenv shell -- bash scripts/fetch_tt_metal.sh      # pinned headers, runtime, and ttsim
-devenv shell -- bash scripts/build_generated.sh     # compile and link against real headers
-devenv shell -- bash scripts/run_generated.sh       # ttsim by default
-devenv shell -- bash scripts/run_generated.sh --device
+devenv shell -- bash scripts/fetch_tt_metal.sh                     # pinned headers, runtime, and ttsim
+devenv shell -- bash scripts/build_generated.sh examples/matmul.mlir
+devenv shell -- bash scripts/run_generated.sh build-generated/matmul
 ```
 
 The build script is a real gate: it configures with `find_package(TT-Metalium)` from the
 extracted release package, then compiles and links the emitted host program against
-`libtt_metal.so`. The run script reports the program's own PCC against its CPU reference. On
-this machine, with no card, the emitted 256x512x1024 bf16 matmul ran under ttsim and returned:
+`libtt_metal.so`. The run script reports the program's own PCC against its CPU reference.
+Runs recorded on this machine, with no card:
 
-```json
-{"status":"pass","backend":"ttsim","pcc":0.9890072}
-```
+| Example | Shape | Grid use | PCC |
+|---|---|---|---|
+| `examples/matmul.mlir` | 256x512x1024 bf16 | 64 of 64 cores | 0.9890072 |
+| `examples/matmul_small.mlir` | 128x128 output, K=64, bf16 | 16 of 64 cores | 0.999301 |
+| `examples/rmsnorm_matmul_small.mlir` | 128x256 output, K=128, bf16, fused RMSNorm | 32 of 64 cores | 0.9993997 |
 
-The last command needs a card. The device path is written against the same pinned release and
-has not been executed on silicon.
+A fused RMSNorm graph is emitted when its activation staging fits the per-core L1 budget; the
+plan JSON records that check as `fused_feasible` and the emitter refuses an infeasible plan with
+the tile arithmetic in the message. The emits are unicast: every output tile reads the operand
+tiles it needs from DRAM, so a shared tile is read more than once. The plan reports both the
+strategy projection and the projection of that emitted access pattern.
+
+`scripts/run_generated.sh --device` runs the same program on a card. The device path is written
+against the pinned release and has not been executed on silicon.
 
 ## What runs where
 
 ![verification map](docs/figures/verification.png)
 
 `devenv shell -- bash scripts/test.sh` checks the device data against its sources, runs the lit
-and GoogleTest suites, runs the Python reference checks and the real TTIR parser gate, enforces
-the prose rules, and compiles an emitted project against the pinned release when `.deps` is
-present. The simulator run is the one execution check available without a card; device
-execution and measured performance stay untested.
+and GoogleTest suites, runs the Python reference checks and the TTIR parser gate, enforces the
+prose rules, and emits, compiles, and runs every emittable example under ttsim when `.deps` is
+present. The simulator runs are the execution checks available without a card; device execution
+and measured performance stay untested.
 
 ## Status
 
-The emitted matmul program is compiled, linked, and executed on the pinned simulator on this
-machine. The upstream matmul example from the same release also ran under the simulator, at
-PCC 0.9791022. No kernel from this project has run on Tenstorrent hardware.
+The emitted matmul and fused RMSNorm programs are compiled, linked, and executed on the pinned
+simulator, on the plan grid and on a partial grid. The upstream matmul example from the same
+release also ran under the simulator, at PCC 0.9791022. No kernel from this project has run on
+Tenstorrent hardware.
 
 Current limits, stated plainly:
 
-- Emission is one core. The plan's grid is analysis and report only; the generated program does
-  not yet realize it.
-- Fused RMSNorm and MLP kernels are planned and reported, not emitted.
+- Reads are unicast. The planner projects weight multicast and reuse, and the emitted program
+  does not implement either yet, so the emitted-path traffic is higher than the strategy
+  projection.
+- The full MLP chain is planned and reported, not emitted. Fused RMSNorm+MatMul emission is
+  limited to shapes whose activation staging fits the per-core L1 budget.
 - Cost figures are a roofline projection. Nothing in this repository measures device time.
 - The reference model checks the compiler's schedule semantics against a NumPy golden. It is not
   a model of the device.

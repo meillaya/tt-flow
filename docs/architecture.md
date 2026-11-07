@@ -18,7 +18,7 @@ Seven passes form the lowering spine. Each pass has one job and runs in this ord
 
 The device flag `--tensixflow-device=<name>` precedes the passes. It defaults to `n150` and records the choice as a `tensixflow.device` module attribute. An unknown name fails with the list of valid names.
 
-Two passes sit outside the spine. `--tensixflow-emit-ttir` prints TTIR text for a tt-mlir frontend; [ttir.md](ttir.md) documents it. The canonicalize pass changes nothing when the input has nothing to fold.
+Three passes sit outside the spine. `--tensixflow-emit-ttir` prints TTIR text for a tt-mlir frontend, and `--tensixflow-import-ttir` reads a documented bare-tensor TTIR subset; [ttir.md](ttir.md) documents both. The canonicalize pass changes nothing when the input has nothing to fold.
 
 ## The tensixflow dialect
 
@@ -90,7 +90,7 @@ tensixflow.sched.kernel @rmsnorm_matmul {
 }
 ```
 
-The circular buffers use the TT-Metalium convention: inputs at `c_0` and `c_1`, output at `c_16`, and the RMSNorm scale at `c_2`. The simulator executes this IR. The emitter accepts the pure matmul schedule; the fused example above reaches the schedule IR and the plan, and the emitter rejects it with a diagnostic.
+The circular buffers use the TT-Metalium convention: inputs at `c_0` and `c_1`, output at `c_16`, and the RMSNorm scale at `c_2`. The simulator executes this IR. The emitter accepts the pure matmul schedule and emits the fused schedule when the activation staging fits L1; an infeasible fused plan exits with a diagnostic that prints the tile arithmetic.
 
 ## Data flow
 
@@ -98,7 +98,7 @@ The circular buffers use the TT-Metalium convention: inputs at `c_0` and `c_1`, 
 examples/*.mlir
   |
   v
-tensixflow-opt  (seven passes)
+tensixflow-opt  (seven spine passes, plus import and emit)
   |-- schedule IR --> tensixflow-simulate --> .tft tensors --> python harness vs NumPy golden
   |-- plan JSON ----> tensixflow-report   --> self-contained HTML report (projected cost)
   `-- project tree --> scripts/build_generated.sh --> scripts/run_generated.sh (ttsim or card)
@@ -110,19 +110,20 @@ tensixflow-opt  (seven passes)
 
 The emitter targets the pinned TT-Metalium release, v0.82.0-rc2. `deps/tt-metal.lock` records the release assets and their sha256 digests. The generated project contains `host.cpp`, `kernels/reader.cpp`, `kernels/compute.cpp`, `kernels/writer.cpp`, `CMakeLists.txt`, and `README.md`. The build compiles and links only the host program; tt-metal's JIT compiles the three kernel sources at run time.
 
-The host program uses the mesh API.
+The host program uses the mesh API and realizes the plan grid.
 
 | TensixFlow concept | TT-Metalium API |
 |---|---|
 | Open the device | `distributed::MeshDevice::create_unit_mesh(device_id)` |
 | Command queue | `mesh_device->mesh_command_queue()` |
 | Build a program | `CreateProgram(*mesh_device)` |
-| Register a kernel | `CreateKernel(program, path, core, DataMovementConfig or ComputeConfig)` |
+| Work split over the plan grid | `split_work_to_cores({gridX, gridY}, mTiles * nTiles)`, then contiguous output-tile ranges per core |
+| Register a kernel | `CreateKernel(program, path, coreRange, DataMovementConfig or ComputeConfig)` on the grid's `CoreRangeSet` |
 | Reader and writer configuration | `DataMovementConfig` with `DataMovementProcessor::RISCV_1` or `RISCV_0`, the matching NoC, and `TensorAccessorArgs` compile-time arguments |
-| Compute configuration | `ComputeConfig` with `math_fidelity = MathFidelity::HiFi4` and the tile counts as compile-time arguments |
-| Circular buffers | `CircularBufferConfig(bytes, {{tt::CBIndex, DataFormat::Float16_b}}).set_page_size(index, tile_bytes)`, then `CreateCircularBuffer` |
+| Compute configuration | `ComputeConfig` with `math_fidelity = MathFidelity::HiFi4` |
+| Circular buffers | `CircularBufferConfig(bytes, {{tt::CBIndex, DataFormat::Float16_b}}).set_page_size(index, tile_bytes)`, then `CreateCircularBuffer` on the core range |
 | DRAM buffers | `distributed::MeshBuffer::create(ReplicatedBufferConfig, DeviceLocalBufferConfig, mesh_device)` with a tile page size |
-| Runtime arguments | `SetRuntimeArgs(program, kernel, core, args)` |
+| Runtime arguments | `SetRuntimeArgs(program, kernel, core, args)` per core, carrying `startTile` and `tileCount` |
 | Enqueue | `workload.add_program`, then `distributed::EnqueueWriteMeshBuffer`, `EnqueueMeshWorkload`, and `EnqueueReadMeshBuffer` |
 
 Kernel sources include `api/dataflow/dataflow_api.h`, `api/compute/compute_kernel_hw_startup.h`, `api/compute/matmul.h`, `api/compute/tile_move_copy.h`, and `hostdevcommon/kernel_structs.h`. The host includes the release's `<tt-metalium/...>` headers.
@@ -135,11 +136,13 @@ Kernel sources include `api/dataflow/dataflow_api.h`, `api/compute/compute_kerne
 | `sched.noc_write` | `TensorAccessor`, `noc_async_write_page` |
 | `sched.matmul_tiles` | `compute_kernel_hw_startup<SrcOrder::Reverse>`, `matmul_init`, `tile_regs_acquire`, `matmul_tiles`, `tile_regs_commit`, `tile_regs_wait`, `pack_tile`, `tile_regs_release` |
 
-The emitted program is a one-core matmul on core `{0, 0}` with deterministic inputs from seed 42. It computes a CPU reference matmul, runs the kernels under the pinned release, prints the PCC, and prints a `TENSIXFLOW_RESULT` line that carries the status, the PCC, and the threshold of 0.97. The planned 8x8 grid stays an analysis decision: realizing it needs per-core output-tile windows that the emitter does not generate.
+The emitted program is a multi-core matmul over the plan grid. The host splits the output tiles into contiguous ranges, creates the three kernels on the grid's core range, and sets `startTile` and `tileCount` on every core. Deterministic inputs come from seed 42. The program computes a CPU reference matmul, runs the kernels under the pinned release, prints the PCC, and prints a `TENSIXFLOW_RESULT` line that carries the status, the PCC, and the threshold of 0.97.
+
+The reads are unicast. Each output tile reads its K activation tiles and its K weight tiles from DRAM, so a tile shared by several output tiles is read several times. The plan JSON's `emission` block projects that access pattern; the `noc` block projects the strategy the planner would prefer. The two blocks stay side by side until a multicast and reuse mapping is emitted.
 
 The host code uses the release's single `CreateKernel` overload and a config variant, so the kernel role comes from the config type. It does not use an older per-program enqueue or a per-role kernel constructor.
 
-The emitter covers the pure matmul path. A fused RMSNorm graph reaches the schedule IR and the plan report, and the emitter exits 1 with a diagnostic that names `examples/matmul.mlir` and the plan and report path. No project tree is written on that failure.
+The emitter covers the matmul path and, when the activation staging fits the per-core L1 budget, the fused `fused_rmsnorm_matmul` path. The fused reader stages the core's activation rows, gamma tiles, and a scaler tile in L1, the compute kernel normalizes the staged rows in place, and the matmul consumes the normalized buffer. The activation is read from DRAM once per row tile and the normalized intermediate never reaches DRAM. The plan JSON marks the fused path feasible or infeasible from the tile arithmetic, and the emitter refuses an infeasible plan with a diagnostic that prints the required and available tiles. `fused_mlp` is still plan-and-report only, and the emitter says so.
 
 The generated `CMakeLists.txt` finds the release package with `find_package(TT-Metalium REQUIRED)` and links the `TT::Metalium` target. `scripts/fetch_tt_metal.sh` unpacks the release artifacts and writes `.deps/env.sh` with the package, library, runtime, and simulator variables.
 
@@ -147,7 +150,7 @@ The generated `CMakeLists.txt` finds the release package with `find_package(TT-M
 
 | Tool | Input | Output |
 |---|---|---|
-| `tensixflow-opt` | `tensixflow` MLIR, plus pass flags | transformed IR, schedule IR, emitted project, or stdout kernels |
+| `tensixflow-opt` | `tensixflow` MLIR or a bare-tensor TTIR subset, plus pass flags | transformed IR, schedule IR, emitted project, or stdout kernels |
 | `tensixflow-translate` | a module carrying a `tensixflow.schedule` attribute | plan JSON (`--tensixflow-to-json`) |
 | `tensixflow-simulate` | an example module and `.tft` input tensors | `.tft` output tensors from the schedule IR |
 | `tensixflow-report` | plan JSON | self-contained offline HTML report |

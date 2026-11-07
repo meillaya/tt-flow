@@ -44,8 +44,7 @@ jobs:
       - name: Fetch pinned tt-metal release artifacts
         run: devenv shell -- bash scripts/fetch_tt_metal.sh
 
-      - name: Compile and link an emitted project against real headers
-        run: devenv shell -- bash scripts/build_generated.sh
-
-      - name: Run the emitted project on the pinned simulator
-        run: devenv shell -- bash scripts/run_generated.sh
+      - name: Build and run every emitted project under ttsim
+        # scripts/test.sh emits, configures, compiles, links, and runs each
+        # example with the pinned release, and fails when any run does not pass.
+        run: devenv shell -- bash scripts/test.sh

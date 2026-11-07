@@ -401,8 +401,10 @@ def verification_scene(rng: random.Random) -> dict:
             [
                 "spec values against\nunit tests",
                 "IR against\nlit and FileCheck",
-                "TTIR against the\npinned ttmlir parser",
+                "TTIR in and out with\nthe pinned ttmlir parser",
                 "emitted host links\nagainst release headers",
+                "matmul on the planned\ngrid under ttsim",
+                "fused RMSNorm matmul\nunder ttsim",
                 "reference model vs\nNumPy golden",
             ],
         ),
@@ -413,7 +415,7 @@ def verification_scene(rng: random.Random) -> dict:
             [
                 "device execution",
                 "measured cycles and\nbandwidth",
-                "fused kernel numerics",
+                "silicon numerics",
             ],
         ),
         (
@@ -430,23 +432,23 @@ def verification_scene(rng: random.Random) -> dict:
     ]
     for title, x, role, items in columns:
         els.append(text(rng, title, x, 96, FONT_NOTE, MUTED))
-        y = 130
+        y = 124
         for item in items:
             shape, bound = box(rng, item, x, y, role=role, width=380, font=FONT_NOTE)
             els.extend([shape, bound])
-            y += 118
+            y += 110
 
     els.append(
         text(
             rng,
             "the red column is not a gap in the report: it is the part no CPU-only run can claim",
             MARGIN,
-            SCENE_H - MARGIN - 30,
+            900,
             FONT_NOTE,
             MUTED,
         )
     )
-    return scene(els, 1520, 800)
+    return scene(els, 1520, 980)
 
 
 def main() -> None:

@@ -92,6 +92,24 @@ The model projects `examples/rmsnorm_matmul.mlir` on n150 at the following terms
 
 The binding constraint is compute: the DRAM term is 74% of the compute term, below the 0.9 balanced band. The three-buffer allocation of 12,288 B occupies 0.86% of the 1,433,600 B n150 CB budget, so the model suggests deepening the buffers from 2 to 4 tiles. It also suggests splitting K, which is 4,096, and spreading N across more X-cores because the plan is compute-bound.
 
+## Emitted-path projection
+
+The plan's `noc` block is the strategy projection: it counts the activation and weight once and assumes multicast and reuse. The emitted program does not implement that strategy yet. It splits output tiles into contiguous ranges over the plan grid, and each core reads the activation and weight tiles its output tiles need directly from DRAM with unicast. The plan's `emission` block carries the projection of that access pattern, computed by `lib/tensixflow/Scheduler/EmissionEstimator.cpp`:
+
+```
+cores_used          = min(grid cores, mTiles * nTiles)
+max_tiles_per_core  = ceil(mTiles * nTiles / cores_used)
+dram_read_bytes     = mTiles * nTiles * kTiles * 2 * 2048
+dram_write_bytes    = mTiles * nTiles * 2048
+fused_stage_tiles   = max_rows_per_core * kTiles
+max_rows_per_core   = min(mTiles, floor((max_tiles_per_core - 1) / nTiles) + 2)
+fused_feasible      = 2 * fused_stage_tiles + 2 * kTiles + 3 <= cb budget tiles
+```
+
+The read figure is an upper bound. It counts a tile read per output tile that needs it, so a weight tile shared by many output tiles is counted many times. The fused path stages a core's activation rows in L1 once, so its activation reads are not multiplied; its weight reads still are. Both numbers are byte arithmetic from the shapes, the grid, and the 2,048-byte tile, and both are labelled projected.
+
+The gap between the two blocks is the honest cost of the naive mapping. When multicast and reuse land, the `emission` block shrinks toward the `noc` block and the two stay side by side until the emitted program actually matches the strategy.
+
 ## What the model leaves out
 
 - RMSNorm and GELU arithmetic. The compute term counts the matmul FLOPs only; the elementwise stages are O(M x K) against O(M x N x K).
