@@ -71,7 +71,7 @@ Do not hand-edit `include/tensixflow/Generated/DeviceSpecs.h` or `python/tensixf
 devenv shell -- python3 tools/check-prose.py
 ```
 
-It rejects the em dash, a banned word list, and a banned phrase list. The rules behind it are in `/home/mei/nixos/agent-settings.nix`. In short: short declarative sentences, actor in the subject and action in the verb, active voice, concrete numbers, sentence-case headings, straight quotes, no emoji, and no closing summary paragraph. No bold scattered through a paragraph.
+It rejects the em dash, a banned word list, and a banned phrase list. The short version: short declarative sentences, actor in the subject and action in the verb, active voice, concrete numbers, sentence-case headings, straight quotes, no emoji, and no closing summary paragraph. No bold scattered through a paragraph.
 
 ## Code style
 
