@@ -7,7 +7,7 @@
 //
 // Public pass interface for the tensixflow dialect: the generated per-pass
 // `createXxx()` declarations plus `mlir::tensixflow::registerPasses()`, which
-// registers all seven tensixflow passes with the global MLIR pass registry.
+// registers the tensixflow passes with the global MLIR pass registry.
 // Mirrors mlir/examples/standalone's StandalonePasses.h (GEN_PASS_DECL /
 // GEN_PASS_REGISTRATION pattern).
 //

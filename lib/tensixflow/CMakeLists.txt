@@ -3,6 +3,7 @@ add_mlir_dialect_library(MLIRTensixflow
   TensixflowOps.cpp
   TensixflowScheduleOps.cpp
   TensixflowPasses.cpp
+  ImportTTIRPass.cpp
   InferTileLayoutPass.cpp
   FuseRmsnormMatmulPass.cpp
   PlanNocShardingPass.cpp

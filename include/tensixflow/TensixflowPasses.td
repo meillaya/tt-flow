@@ -5,11 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Pass declarations for the tensixflow transform pipeline. The seven passes form
+// Pass declarations for the tensixflow transform pipeline. Seven passes form
 // the lowering spine: tile-layout inference, canonicalize, fusion, NoC
 // sharding, circular-buffer allocation, kernel lowering, and Metalium emission.
-// The device each pass plans against comes from the generated table in
-// Devices.h and the `tensixflow.device` attribute the driver stamps.
+// Two more sit outside the spine: import rebuilds documented bare-tensor TTIR
+// as tensixflow IR, and emit prints tensixflow ops as TTIR text. The device
+// each pass plans against comes from the generated table in Devices.h and the
+// `tensixflow.device` attribute the driver stamps.
 //
 //===----------------------------------------------------------------------===//
 
@@ -119,6 +121,30 @@ def EmitTTIRPass : TensixflowPass<"tensixflow-emit-ttir",
 
     The pass does not run any upstream tt-mlir pipeline. Lowering the emitted
     text through tt-mlir is outside this repository's checks.
+  }];
+}
+
+def ImportTTIRPass : TensixflowPass<"tensixflow-import-ttir",
+    "Import a documented bare-tensor TTIR subset"> {
+  let description = [{
+    Rebuilds a module written in the documented bare-tensor TTIR subset as
+    tensixflow IR, so the planning pipeline runs unchanged. The input is parsed
+    with --allow-unregistered-dialect because this build does not link the ttir
+    dialect; the source ops are unregistered generic operations, so the pass
+    matches them by name.
+
+    Accepted subset: exactly one func.func with one block and one result, bare
+    static ranked tensor types (bf16 or f32), generic-form ttir.matmul,
+    ttir.add, ttir.gelu, and ttir.rms_norm ops, and func.return. Every source op
+    becomes the matching tensixflow op and the function becomes tensixflow.func.
+    The ttir.rms_norm normalized_shape must name the last dimension, and epsilon
+    maps onto the tensixflow.rmsnorm epsilon attribute.
+
+    Rejected with a diagnostic that names the construct and points at
+    docs/ttir.md: any other operation, layout-encoded tensor types, module
+    device attributes, dynamic shapes, element types other than bf16 and f32,
+    transpose_a or transpose_b set to true, rank-1 tensors outside the rms_norm
+    weight, and multiple functions.
   }];
 }
 

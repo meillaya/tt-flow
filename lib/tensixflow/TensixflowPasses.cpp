@@ -5,17 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// No-op stub definitions for the tensixflow passes declared in
-// TensixflowPasses.td so that GEN_PASS_REGISTRATION links and multi-pass
-// pipelines compose. Each later todo replaces its stub with a real body; the
-// generated anchor a body must derive from is `impl::<Def>Base<Derived>`.
+// Pass registration for the tensixflow dialect.
 //
-// CanonicalizePass has a real body below (it applies the dialect's
-// canonicalization patterns via the greedy rewrite driver). InferTileLayoutPass,
+// CanonicalizePass has its body below (it applies the dialect's canonicalization
+// patterns through the greedy rewrite driver). InferTileLayoutPass,
 // FuseRmsnormMatmulPass, PlanNocShardingPass, AllocateCircularBuffersPass,
-// LowerToTTKernelPass, and EmitMetaliumPass have real bodies in their own .cpp
-// files (their GEN_PASS_DEF_* + classes live there), so they are intentionally
-// absent here to keep exactly one definition of each pass and its createXxx().
+// LowerToTTKernelPass, EmitMetaliumPass, EmitTTIRPass, and ImportTTIRPass have
+// bodies in their own .cpp files, so they are absent here to keep one definition
+// of each pass and its createXxx().
 //
 //===----------------------------------------------------------------------===//
 
