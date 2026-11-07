@@ -1,224 +1,155 @@
-# TensixFlow Architecture
+# Architecture
 
-TensixFlow is a from-scratch C++/MLIR compiler stack for Tenstorrent-style spatial
-accelerators. It lowers hand-written MLIR in a custom `tensixflow` dialect through
-fusion, tile-layout inference, NoC-aware sharding, and circular-buffer allocation,
-then emits TT-Metalium-style reader/compute/writer kernels plus a static performance
-report. The modeled device is a single Wormhole n150-class part: an 8x8 core grid,
-32x32 tiles, a conservative 1 MiB of modeled L1 per core, and bf16 data with fp32
-accumulation.
+TensixFlow compiles one MLIR module in the `tensixflow` dialect into three artifacts: a tile-level schedule IR, a standalone TT-Metalium project, and a plan JSON that carries a projected cost model. The compiler selects a device table entry from `spec/devices.json`; the default is Wormhole n150. The supported emitted-project path covers a single matmul. Fused RMSNorm graphs lower to schedule IR and plan JSON, and the emitter rejects them with a diagnostic.
 
-Three things run here, and only three: a compiler, a functional tile-level simulator,
-and a code generator. There is no hardware run. Read the [Honesty disclaimer](#honesty-disclaimer)
-at the bottom of this page before quoting any number.
+## Pipeline
 
-## Pipeline overview
+Seven passes form the lowering spine. Each pass has one job and runs in this order.
 
-The lowering spine is seven `tensixflow-opt` passes. The first five stay at the
-tensor and plan level, the sixth lowers to the tile-level schedule IR, and the
-seventh emits standalone TT-Metalium kernel sources. Two consumers tap the schedule
-IR and the plan: the functional simulator (numeric correctness) and the performance
-model plus HTML report (static estimates).
+| # | Flag | Job |
+|---|---|---|
+| 1 | `--tensixflow-infer-tile-layout` | Attach a `#tensixflow.tile_layout`, a 32x32 tile, the device grid, and a DRAM or L1 memory space, to every function argument and op result. Metadata only: no shape changes. |
+| 2 | `--tensixflow-canonicalize` | Remove identity adds and fold constants on tensixflow ops. |
+| 3 | `--tensixflow-fuse-rmsnorm-matmul` | Rewrite a single-use `rmsnorm -> matmul` pair into `tensixflow.fused_rmsnorm_matmul`, and a full MLP chain into `tensixflow.fused_mlp`. Record the eliminated tensors and bytes on the fused op and on the module. |
+| 4 | `--tensixflow-plan-noc-sharding` | Place the graph on the device grid, shard the activation M dimension across the Y cores, pick a weight strategy, estimate NoC traffic, and write the `tensixflow.schedule` module attribute. |
+| 5 | `--tensixflow-allocate-circular-buffers` | Assign circular-buffer indices and depths under the device's usable L1 budget, then complete the schedule attribute. |
+| 6 | `--tensixflow-lower-to-ttkernel` | Build the `tensixflow.sched.kernel` schedule IR, stamp the matmul shape on the kernel, and erase the source function. |
+| 7 | `--tensixflow-emit-metalium` | Write `host.cpp`, `kernels/reader.cpp`, `kernels/compute.cpp`, `kernels/writer.cpp`, `CMakeLists.txt`, and `README.md` under the directory given by `output-dir`, or print the four sources to stdout with file-delimiter banners. |
 
-```
-            Hand-written MLIR in the tensixflow dialect
-            (examples/rmsnorm_matmul.mlir, examples/mlp_block.mlir)
-                                  |
-                                  v
-  --tensixflow-infer-tile-layout        attach #tensixflow.tile_layout
-                                        (32x32 tile, 8x8 grid, DRAM/L1 space)
-                                  |
-                                  v
-  --tensixflow-canonicalize             identity-add removal, constant folding
-                                  |
-                                  v
-  --tensixflow-fuse-rmsnorm-matmul      rmsnorm+matmul -> fused_rmsnorm_matmul
-                                        full MLP chain  -> fused_mlp
-                                  |
-                                  v
-  --tensixflow-plan-noc-sharding        8x8 grid placement, weight strategy
-                                        (replicate / shard / multicast),
-                                        NoC traffic, tensixflow.schedule attr
-                                  |
-                                  v
-  --tensixflow-allocate-circular-buffers  CB indices {c_0, c_1, c_16}, depth 160
-                                  |
-                                  v
-  --tensixflow-lower-to-ttkernel        tile-level schedule IR
-                                        (sched.kernel / reader / compute / writer)
-                                  |
-                +-----------------+-----------------+
-                |                                   |
-                v                                   v
-  --tensixflow-emit-metalium            Functional tile simulator
-  host.cpp, reader.cpp,                 (sim::runTileSimulator) executes
-  compute.cpp, writer.cpp,              the schedule IR over modeled bf16
-  CMakeLists.txt, README.md             circular buffers
-                |                                   |
-                v                                   v
-  Structurally validated only           Compared against an fp32-exact
-  (FileCheck goldens + compile-only     NumPy golden, PCC >= 0.9875
-   against signature-only stubs)
-```
+The device flag `--tensixflow-device=<name>` precedes the passes. It defaults to `n150` and records the choice as a `tensixflow.device` module attribute. An unknown name fails with the list of valid names.
 
-The report path branches off after circular-buffer allocation, before the lowering
-erases the source function:
-
-```
-  --tensixflow-plan-noc-sharding --tensixflow-allocate-circular-buffers
-                                  |
-                                  v
-  tensixflow-translate --tensixflow-to-json        plan.json (plan + noc + cb)
-                                  |
-                                  v
-  tensixflow-report --in plan.json --out report.html
-        runs the static performance model (estimatePerf) to fill the perf
-        section, then renders the self-contained offline HTML visualizer
-```
+Two passes sit outside the spine. `--tensixflow-emit-ttir` prints TTIR text for a tt-mlir frontend; [ttir.md](ttir.md) documents it. The canonicalize pass changes nothing when the input has nothing to fold.
 
 ## The tensixflow dialect
 
-The custom out-of-tree dialect (namespace `mlir::tensixflow`) follows the
-llvm-project standalone-example layout. Ops live in `include/tensixflow/TensixflowOps.td`:
+The dialect lives in `include/tensixflow/`. Its ops carry shape inference and verifiers.
 
 | Op | Kind | Notes |
 |---|---|---|
-| `tensixflow.func` | container | isolated-from-above function, single-block body terminated by `tensixflow.return` |
-| `tensixflow.return` | terminator | returns the function results |
-| `tensixflow.constant` | value | typed constant, `ConstantLike` + foldable |
-| `tensixflow.add` | elementwise | same-shape sum; canonicalizes away an identity zero operand |
-| `tensixflow.gelu` | elementwise | exact-erf GELU/SiLU activation |
-| `tensixflow.matmul` | compute | `[..., M, K] x [K, N] -> [..., M, N]`; verifier rejects mismatched contracting dims |
-| `tensixflow.rmsnorm` | compute | RMSNorm over the last dim; verifier checks the 1-D gamma matches the last dim |
-| `tensixflow.fused_rmsnorm_matmul` | fused | `matmul(rmsnorm(input, gamma), weight)` as one kernel |
-| `tensixflow.fused_mlp` | fused | `(gelu(matmul(rmsnorm(x, gamma), w1) + b1) @ w2) + residual` as one kernel |
+| `tensixflow.func` | container | Isolated function with one block, terminated by `tensixflow.return`. |
+| `tensixflow.return` | terminator | Returns the function results. |
+| `tensixflow.constant` | value | Typed constant, foldable. |
+| `tensixflow.add` | elementwise | Same-shape sum. The canonicalizer removes an identity zero operand. |
+| `tensixflow.gelu` | elementwise | Exact-erf GELU. |
+| `tensixflow.matmul` | compute | `[..., M, K] x [K, N] -> [..., M, N]`. The verifier rejects mismatched contracting dimensions. |
+| `tensixflow.rmsnorm` | compute | RMSNorm over the last dimension. The verifier checks that the 1-D gamma matches that dimension. |
+| `tensixflow.fused_rmsnorm_matmul` | fused | `matmul(rmsnorm(input, gamma), weight)`. |
+| `tensixflow.fused_mlp` | fused | `(gelu(matmul(rmsnorm(x, gamma), w1) + b1) @ w2) + residual`. |
 
-Every compute and fused op carries shape inference
-(`InferShapedTypeOpInterface`) and a verifier. The dialect also defines two
-attributes: the `#tensixflow.tile_layout` encoding (tile size, grid placement,
-DRAM/L1 memory space) and the `#tensixflow.schedule` attribute that records the
-plan (grid, sharding, weight strategy, circular buffers, NoC traffic).
-
-## Tile-layout inference
-
-`--tensixflow-infer-tile-layout` attaches a `#tensixflow.tile_layout<tile 32x32,
-grid 8x8, mem DRAM|L1>` encoding across the graph. Function tensor arguments are
-marked DRAM (they enter from off-chip), and op tensor results are marked L1 (they
-live on-chip once scheduled). The pass is pure metadata: it never changes a shape.
-
-## Fusion
-
-`--tensixflow-fuse-rmsnorm-matmul` runs two greedy rewrite patterns. The MLP-chain
-pattern (higher benefit) walks `rmsnorm -> matmul -> bias-add -> gelu -> matmul ->
-residual-add` link by link, guarding single-use at every intermediate, and collapses
-a full chain into one `tensixflow.fused_mlp`. A partial chain falls through to the
-rmsnorm+matmul pattern, which rewrites a single-use `rmsnorm -> matmul` pair into one
-`tensixflow.fused_rmsnorm_matmul`.
-
-Each fusion erases the intermediate tensors and records the elimination on the fused
-op (`tensixflow.eliminated_tensors`, `tensixflow.eliminated_bytes`) and on the module
-(`tensixflow.fusion_report` count). This is the mechanism that keeps the normalized
-intermediate resident in L1 instead of round-tripping DRAM, which is the whole point
-of the exercise and the invariant the performance model reproduces.
-
-## NoC-aware scheduler and circular-buffer allocation
-
-`--tensixflow-plan-noc-sharding` maps the shapes onto the 8x8 grid and picks a weight
-strategy under the L1 budget:
-
-- **Replicate** when the weight fits the per-core circular-buffer budget (every core
-  holds a full copy, zero multicast traffic).
-- **Multicast** otherwise: column-shard N across the X-cores and move the whole weight
-  once over the NoC via row master nodes, rather than re-reading it from DRAM per core.
-
-The pass row-major shards the activation M across the Y-cores, runs the NoC traffic
-estimator for both the unfused and fused paths, and writes everything into the
-module-level `tensixflow.schedule` attribute.
-
-`--tensixflow-allocate-circular-buffers` then assigns circular-buffer indices and
-depths under the same budget. The default three-buffer pipeline uses the tt-metal
-convention `in0 = c_0`, `in1 = c_1`, `out = c_16`, each at depth 160 tiles. The shared
-L1-budget constants live in one header (`lib/tensixflow/Scheduler/L1Model.h`) and are
-imported by both the allocator and the performance model. See
-[performance_model.md](performance_model.md) for the budget arithmetic.
+Two attributes carry scheduling decisions. `#tensixflow.tile_layout<tile HxW, grid YxX, mem DRAM|L1>` is the tensor encoding. `#tensixflow.schedule` records the grid, activation sharding, weight strategy, intermediate storage, fusion decision, circular buffers, NoC traffic, and fusion savings. It is pure metadata until the lowering pass reads it.
 
 ## The schedule IR
 
-`--tensixflow-lower-to-ttkernel` is the true lowering: it consumes the source function
-plus the schedule attribute and produces a tile-level schedule IR, then erases the
-source function (the kernel becomes the sole symbol). The schedule dialect
-(`tensixflow.sched.*`, defined in `include/tensixflow/TensixflowSchedule.td`) is the
-contract between code generation and the simulator:
+`--tensixflow-lower-to-ttkernel` produces one `tensixflow.sched.kernel` symbol with three regions, one per TT-Metalium kernel role.
 
-- **Containers:** `sched.kernel` holds three single-region program ops, one per
-  tt-metal `kernel_main` role: `sched.reader`, `sched.compute`, `sched.writer`.
-- **Structured loop:** `sched.tile_loop` carries a static trip count.
-- **Circular-buffer ops:** `sched.cb_reserve_back`, `sched.cb_push_back`,
-  `sched.cb_wait_front`, `sched.cb_pop_front`, keyed by static CB indices.
-- **NoC ops:** `sched.noc_read`, `sched.noc_write`, `sched.noc_multicast`.
-- **Compute ops:** `sched.matmul_tiles`, `sched.rmsnorm`, `sched.gelu`, over CB indices.
+| Op | Role |
+|---|---|
+| `tensixflow.sched.kernel` | Container symbol for the three tile programs. |
+| `tensixflow.sched.reader` | Data-movement program that stages input tiles into circular buffers. |
+| `tensixflow.sched.compute` | Tile math program that pops inputs, computes, and pushes outputs. |
+| `tensixflow.sched.writer` | Data-movement program that drains output tiles. |
+| `tensixflow.sched.tile_loop` | Static-trip-count loop. One iteration per tile or tile block. |
+| `tensixflow.sched.cb_reserve_back`, `cb_push_back`, `cb_wait_front`, `cb_pop_front` | Circular-buffer handshake, keyed by a CB index. |
+| `tensixflow.sched.noc_read`, `noc_write`, `noc_multicast` | Tile movement over the NoC. Multicast carries a fan-out count. |
+| `tensixflow.sched.matmul_tiles` | Tile multiply-accumulate over two input CBs into an output CB. |
+| `tensixflow.sched.rmsnorm`, `tensixflow.sched.gelu` | Fused prologue and epilogue tile math. |
 
-For the running `rmsnorm_matmul` example the reader and compute loops stream the K
-dimension (trip 128) and the writer drains every output tile (trip 24576 = 64 x 384).
+The lowering stamps a `tensixflow.matmul_shape = [M, N, K]` attribute on the kernel. The emitter reads it to size the DRAM buffers and the CPU reference matmul, and refuses to emit when the attribute is missing.
 
-## TT-Metalium codegen
+For the running `examples/rmsnorm_matmul.mlir` example, with M=2048, K=4096, and N=12288, the reader and compute loops stream 128 K-tiles and the writer drains 24,576 output tiles (64 x 384):
 
-`--tensixflow-emit-metalium` walks the schedule IR and emits a standalone generated
-project against the **current** tt-metal API: `host.cpp`, `reader.cpp`,
-`compute.cpp`, `writer.cpp`, a compile-only `CMakeLists.txt`, and a `README.md`.
-With no option it prints the four kernels to stdout separated by `// ===== file:
-<name>.cpp =====` banners; with `output-dir=<dir>` it writes the whole tree. The host
-uses the single `CreateKernel` with a `variant<ComputeConfig, DataMovementConfig>`,
-`tt::CBIndex` circular buffers, and the `distributed::Enqueue*` mesh API. The full
-op-by-op mapping and the legacy-API note are in
-[tenstorrent_mapping.md](tenstorrent_mapping.md).
+```mlir
+tensixflow.sched.kernel @rmsnorm_matmul {
+  tensixflow.sched.reader {
+    tensixflow.sched.tile_loop 128 {
+      tensixflow.sched.cb_reserve_back 0, 1
+      tensixflow.sched.noc_read 0, 0, 1
+      tensixflow.sched.cb_push_back 0, 1
+      tensixflow.sched.cb_reserve_back 1, 1
+      tensixflow.sched.noc_multicast 1, 0, 1, 8
+      tensixflow.sched.cb_push_back 1, 1
+    }
+  }
+  tensixflow.sched.compute {
+    tensixflow.sched.tile_loop 128 {
+      tensixflow.sched.cb_wait_front 0, 1
+      tensixflow.sched.cb_wait_front 1, 1
+      tensixflow.sched.rmsnorm 0, 2, 0
+      tensixflow.sched.matmul_tiles 0, 1, 16
+      tensixflow.sched.cb_pop_front 0, 1
+      tensixflow.sched.cb_pop_front 1, 1
+    }
+  }
+  tensixflow.sched.writer {
+    tensixflow.sched.tile_loop 24576 {
+      tensixflow.sched.cb_wait_front 16, 1
+      tensixflow.sched.noc_write 16, 0, 1
+      tensixflow.sched.cb_pop_front 16, 1
+    }
+  }
+}
+```
 
-## Functional simulator and correctness
+The circular buffers use the TT-Metalium convention: inputs at `c_0` and `c_1`, output at `c_16`, and the RMSNorm scale at `c_2`. The simulator executes this IR. The emitter accepts the pure matmul schedule; the fused example above reaches the schedule IR and the plan, and the emitter rejects it with a diagnostic.
 
-The functional tile simulator (`lib/tensixflow/Sim/TileSimulator.cpp`) executes the
-schedule IR, not the emitted C++. It walks `sched.kernel`, reads the compute ops and
-their CB indices, and performs the denoted tile computation over modeled circular
-buffers: round-on-push into bf16 buffers, an fp32 reduce-and-scale RMSNorm, a tiled
-matmul with fp32 accumulation within a tile and a bf16 round per output tile, and a
-bf16 GELU. Fused intermediates between stages are stored as bf16.
+## Data flow
 
-The correctness harness (`python/tensixflow/harness.py`) drives the simulator through
-the `tensixflow-simulate` tool and compares the result against the fp32-exact NumPy
-golden (`python/tensixflow/golden.py`). The two paths are deliberately at different
-precision so the PCC bar measures real divergence. The primary metric is PCC with a
-floor of 0.9875; the rounding contract and the non-vacuity defense are documented in
-[performance_model.md](performance_model.md).
+```
+examples/*.mlir
+  |
+  v
+tensixflow-opt  (seven passes)
+  |-- schedule IR --> tensixflow-simulate --> .tft tensors --> python harness vs NumPy golden
+  |-- plan JSON ----> tensixflow-report   --> self-contained HTML report (projected cost)
+  `-- project tree --> scripts/build_generated.sh --> scripts/run_generated.sh (ttsim or card)
+```
 
-## Performance model and report
+`tensixflow-translate --tensixflow-to-json` serializes a planned module to `plan.json`. The translate step must run before `--tensixflow-lower-to-ttkernel`, because the lowering erases the source function that carries `graph_id` and the tensor list. `tensixflow-report` fills the `perf` block by running the cost model, then renders the HTML.
 
-The static performance model (`lib/tensixflow/Analysis/PerfModel.h`) is a first-order
-analytic roofline over the plan: estimated cycles, DRAM/L1/NoC traffic, circular-buffer
-occupancy, compute utilization, and a memory-vs-compute bound classification with
-concrete suggestions. Every figure is a static estimate from the tensor shapes and the
-shared L1 constants, never a measured hardware number. `tensixflow-report` runs the
-model to fill the plan's perf section and renders the self-contained offline HTML
-visualizer. The formulas are in [performance_model.md](performance_model.md).
+## Mapping to TT-Metalium
 
-## Honesty disclaimer
+The emitter targets the pinned TT-Metalium release, v0.82.0-rc2. `deps/tt-metal.lock` records the release assets and their sha256 digests. The generated project contains `host.cpp`, `kernels/reader.cpp`, `kernels/compute.cpp`, `kernels/writer.cpp`, `CMakeLists.txt`, and `README.md`. The build compiles and links only the host program; tt-metal's JIT compiles the three kernel sources at run time.
 
-Nothing in this project executes the generated C++ kernels on hardware. There is no
-Tenstorrent device in the loop, and no claim of on-device behavior anywhere.
+The host program uses the mesh API.
 
-The generated kernels (`host.cpp`, `reader.cpp`, `compute.cpp`, `writer.cpp`) are
-validated **structurally** only. That validation is two layers: golden FileCheck
-patterns that assert the current-API tokens (single `CreateKernel` + config variant,
-`tt::CBIndex`, `distributed::Enqueue*`), and a compile-only `-fsyntax-only` check
-against signature-only tt-metal stub headers pinned to `@df36cd6`. The stubs carry no
-behavior. The kernels are **never executed**, and they are not claimed to be
-numerically verified. A negative fixture that calls the removed legacy enqueue API is
-deliberately kept failing, so the stub set cannot silently drift back to a legacy
-surface.
+| TensixFlow concept | TT-Metalium API |
+|---|---|
+| Open the device | `distributed::MeshDevice::create_unit_mesh(device_id)` |
+| Command queue | `mesh_device->mesh_command_queue()` |
+| Build a program | `CreateProgram(*mesh_device)` |
+| Register a kernel | `CreateKernel(program, path, core, DataMovementConfig or ComputeConfig)` |
+| Reader and writer configuration | `DataMovementConfig` with `DataMovementProcessor::RISCV_1` or `RISCV_0`, the matching NoC, and `TensorAccessorArgs` compile-time arguments |
+| Compute configuration | `ComputeConfig` with `math_fidelity = MathFidelity::HiFi4` and the tile counts as compile-time arguments |
+| Circular buffers | `CircularBufferConfig(bytes, {{tt::CBIndex, DataFormat::Float16_b}}).set_page_size(index, tile_bytes)`, then `CreateCircularBuffer` |
+| DRAM buffers | `distributed::MeshBuffer::create(ReplicatedBufferConfig, DeviceLocalBufferConfig, mesh_device)` with a tile page size |
+| Runtime arguments | `SetRuntimeArgs(program, kernel, core, args)` |
+| Enqueue | `workload.add_program`, then `distributed::EnqueueWriteMeshBuffer`, `EnqueueMeshWorkload`, and `EnqueueReadMeshBuffer` |
 
-Numeric correctness is established at the **schedule-IR level**, not the kernel level.
-The functional simulator runs the lowered reader/compute/writer tile program over
-modeled circular buffers (the bf16 spatial model) and is compared against an
-fp32-exact NumPy golden, with PCC as the primary metric and a floor of 0.9875.
+Kernel sources include `api/dataflow/dataflow_api.h`, `api/compute/compute_kernel_hw_startup.h`, `api/compute/matmul.h`, `api/compute/tile_move_copy.h`, and `hostdevcommon/kernel_structs.h`. The host includes the release's `<tt-metalium/...>` headers.
 
-In short: the schedule is numerically validated; the generated kernels are
-structurally aligned and compile-checked. The two are different claims, and this
-project keeps them separate on purpose.
+| Schedule IR op | Emitted TT-Metalium intrinsic |
+|---|---|
+| `sched.cb_reserve_back` / `cb_push_back` | `cb_reserve_back`, `cb_push_back` |
+| `sched.cb_wait_front` / `cb_pop_front` | `cb_wait_front`, `cb_pop_front` |
+| `sched.noc_read` | `TensorAccessor`, `noc_async_read_page` |
+| `sched.noc_write` | `TensorAccessor`, `noc_async_write_page` |
+| `sched.matmul_tiles` | `compute_kernel_hw_startup<SrcOrder::Reverse>`, `matmul_init`, `tile_regs_acquire`, `matmul_tiles`, `tile_regs_commit`, `tile_regs_wait`, `pack_tile`, `tile_regs_release` |
+
+The emitted program is a one-core matmul on core `{0, 0}` with deterministic inputs from seed 42. It computes a CPU reference matmul, runs the kernels under the pinned release, prints the PCC, and prints a `TENSIXFLOW_RESULT` line that carries the status, the PCC, and the threshold of 0.97. The planned 8x8 grid stays an analysis decision: realizing it needs per-core output-tile windows that the emitter does not generate.
+
+The host code uses the release's single `CreateKernel` overload and a config variant, so the kernel role comes from the config type. It does not use an older per-program enqueue or a per-role kernel constructor.
+
+The emitter covers the pure matmul path. A fused RMSNorm graph reaches the schedule IR and the plan report, and the emitter exits 1 with a diagnostic that names `examples/matmul.mlir` and the plan and report path. No project tree is written on that failure.
+
+The generated `CMakeLists.txt` finds the release package with `find_package(TT-Metalium REQUIRED)` and links the `TT::Metalium` target. `scripts/fetch_tt_metal.sh` unpacks the release artifacts and writes `.deps/env.sh` with the package, library, runtime, and simulator variables.
+
+## Tools
+
+| Tool | Input | Output |
+|---|---|---|
+| `tensixflow-opt` | `tensixflow` MLIR, plus pass flags | transformed IR, schedule IR, emitted project, or stdout kernels |
+| `tensixflow-translate` | a module carrying a `tensixflow.schedule` attribute | plan JSON (`--tensixflow-to-json`) |
+| `tensixflow-simulate` | an example module and `.tft` input tensors | `.tft` output tensors from the schedule IR |
+| `tensixflow-report` | plan JSON | self-contained offline HTML report |
+
+The tools build into `build/bin/`. [device.md](device.md) covers the run path on a simulator or a card, [verification.md](verification.md) covers the checks, and [performance.md](performance.md) covers the cost model.

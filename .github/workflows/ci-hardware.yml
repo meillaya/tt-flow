@@ -1,64 +1,39 @@
-# TensixFlow CI - hardware (GATED, todo 55 / 56, D19).
-#
-# This workflow runs the ON-DEVICE branch (todo 55) and ONLY the on-device
-# branch: a present device must be compiled against the real tt-metal, run,
-# and PCC-validated - per D19/D25 there is NO fallback to the no-device
-# branch here, so a device-box failure is never masked by a passing fallback.
-#
-# The job is gated TWICE and never runs on a no-device box:
-#   1. LABEL gate: the PR must carry the `hardware.present` label.
-#   2. RUNNER gate: `runs-on: [self-hosted, tenstorrent, wormhole-n150]` -
-#      only a self-hosted runner tagged as carrying the Wormhole n150 can
-#      pick the job up (GitHub-hosted runners never match).
-#
-# The no-device branch (always available, must PASS) lives in ci.yml's
-# regular build-and-test job + `check-generated-kernels-compile`, NOT here.
+# Device acceptance. Runs only on a self-hosted runner that carries a
+# Tenstorrent card and only when the pull request is labelled hardware.present.
+# There is no CPU fallback in this workflow: a device job that cannot see a card
+# fails here rather than silently passing elsewhere.
 name: CI (hardware)
 
 on:
   pull_request:
-    # labeled/unlabeled so adding/removing hardware.present re-evaluates the gate.
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 jobs:
   on-device:
-    # LABEL gate (job-level `if`). workflow_dispatch is the explicit manual
-    # override for a validated bring-up attempt.
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'hardware.present')
-
-    # RUNNER gate: only a self-hosted runner with these labels has hardware.
-    runs-on: [self-hosted, tenstorrent, wormhole-n150]
-
+    runs-on: [self-hosted, tenstorrent]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Assert a device is present (never fall through, D19)
-        # A gated job that lands on a deviceless runner is a misconfiguration
-        # and must FAIL honestly; masking it with the no-device branch would
-        # violate the disjunctive acceptance (D19/D25).
-        run: |
-          if [ ! -e /dev/tenstorrent ]; then
-            echo "FAIL: this job requires a Tenstorrent device (/dev/tenstorrent)." >&2
-            echo "      This runner is not carrying hardware; refusing to fall" >&2
-            echo "      through to the no-device branch (D19: no masking)." >&2
-            exit 1
-          fi
-          echo "device present: /dev/tenstorrent"
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: "experimental-features = nix-command flakes"
 
-      - name: On-device branch (todo 55) - compile + run + PCC vs golden
-        # The todo-55 entry point compiles kernels/generated/fused_rmsnorm_matmul
-        # against the REAL tt-metal (not stubs), enqueues via
-        # distributed::EnqueueMeshWorkload, reads back, and asserts
-        # PCC >= 0.9875 vs the NumPy golden; results are recorded in
-        # docs/hardware_path.md. This step fails loudly until that script
-        # exists - a skipped-on-device is never a silent pass.
+      - name: Install devenv from the pinned nixpkgs revision
         run: |
-          if [ ! -x scripts/hw_run_on_device.sh ]; then
-            echo "FAIL: scripts/hw_run_on_device.sh is not present." >&2
-            echo "      The on-device branch (todo 55) has not landed on this" >&2
-            echo "      runner yet; the hardware-gated job fails honestly." >&2
-            exit 1
-          fi
-          bash scripts/hw_run_on_device.sh
+          nix profile install "github:NixOS/nixpkgs/bd3c09ca2a2858daa15f26eb557faa4709635a41#devenv"
+
+      - name: Probe the card
+        run: devenv shell -- python3 scripts/device_probe.py
+
+      - name: Fetch pinned tt-metal release artifacts
+        run: devenv shell -- bash scripts/fetch_tt_metal.sh
+
+      - name: Build the emitted project against the pinned runtime
+        run: devenv shell -- bash scripts/build_generated.sh
+
+      - name: Run on the device and check numerics
+        run: devenv shell -- bash scripts/run_generated.sh --device
