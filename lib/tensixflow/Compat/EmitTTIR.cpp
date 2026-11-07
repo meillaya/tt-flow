@@ -5,51 +5,42 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The --tensixflow-emit-ttir pass (todo 51, Wave 9): translates tensixflow
-// ops into TTIR-shaped MLIR TEXT printed to stdout. This is the first code
-// deliverable of the TT-MLIR compatibility wave. The engine lives in
-// Compat/TTIRTextEmitter (layout-attr vocabulary in Compat/TTIRLayoutAttrs).
+// The --tensixflow-emit-ttir pass: translates tensixflow ops into TTIR-shaped
+// MLIR text printed to stdout. The engine lives in Compat/TTIRTextEmitter and
+// the layout vocabulary in Compat/TTIRLayoutAttrs. The released tt-mlir parser
+// validates the text in python/tensixflow/tests/test_ttir_parse.py.
 //
-// TTIR ONLY per draft D21: TTNN/D2M/TTKernel/TTMetal stay prose mappings in
-// docs/tenstorrent_mapping.md and are never emitted as code.
+// Syntax contract: tt-mlir 0.9.0.dev20260221, the wheel pinned in
+// deps/tt-mlir.lock. scripts/fetch_ttmlir_fixtures.sh caches the quoted
+// fixtures under .deps/ttmlir/fixtures, and docs/ttir.md lists the supported
+// subset.
 //
-// Syntax contract = docs/ttmlir_study.md (tt-mlir @9f06802f test snippets):
-//
-// * Ops use the generic MLIR form with the shape in the function type:
-//   `"ttir.matmul"(%a, %b) : (tensor<MxKxbf16>, tensor<KxNxbf16>) ->
-//   tensor<MxNxbf16>`, attributes in the `<{...}>` slot.
-// * Placement rides in `#ttcore.metal_layout` tensor encodings (see
-//   TTIRLayoutAttrs.cpp for the exact grounded form). Function inputs are
-//   `dram`, op results are `l1` (the InferTileLayoutPass memory
-//   convention); the memref-level `#ttcore.memory_space<l1>` spelling is
-//   the post-bufferization D2M form and stays prose in the banner.
+// * Ops use the generic MLIR form with operand and result types spelled out:
+//   `"ttir.matmul"(%a, %b) : (tensor<...>, tensor<...>) -> tensor<...>`, with
+//   attributes in the `<{...}>` slot.
+// * Placement rides in `#ttcore.metal_layout` tensor encodings with the pinned
+//   field order quoted in TTIRLayoutAttrs.cpp. Function inputs are `dram`, op
+//   results are `l1` (the InferTileLayoutPass convention). A rank-1 tensor
+//   keeps a plain type because the pinned verifier rejects a rank-1
+//   logical_shape.
 //
 // Op mappings:
-// * add -> "ttir.add"; matmul -> "ttir.matmul" (generic form, no transpose
-//   attrs: the positive-test form the study quotes).
-// * rmsnorm -> "ttir.rms_norm" (CHOICE, documented): the fused canonical op
-//   tt-mlir's own --ttir-fusing produces from the pow/sum/multiply/
-//   add/rsqrt/broadcast/multiply decomposition chain the study quotes
-//   (rms_norm_fusion.mlir's CHECK lines). Fused-to-fused is the 1:1
-//   semantic match and carries the epsilon attribute across
-//   (`<{epsilon = ..., normalized_shape = array<i64: K>,
-//   operandSegmentSizes = array<i32: 1, 1, 0>}>`).
-// * fused_rmsnorm_matmul -> rms_norm + matmul composition; fused_mlp ->
-//   the study-grounded prefix (rms_norm + matmul + bias add) plus markers
-//   for the gelu stage and its poisoned tail.
-// * tensixflow.gelu emits a `// UNSUPPORTED` marker (CHOICE, documented):
-//   ttir.gelu exists upstream, but it is outside the study doc's grounded
-//   inventory, and the study doc is this wave's emitter contract; the
-//   emitter maps only study-grounded ops rather than emit syntax the
-//   contract does not cover. Todo 52 (mapping-doc extension) is the place
-//   to admit it.
+// * add -> "ttir.add"; matmul -> "ttir.matmul". TTIR elementwise binary ops are
+//   broadcastable at the pin, so a rank-1 bias operand in the fused MLP is
+//   legal.
+// * rmsnorm -> "ttir.rms_norm" with the optional weight operand and the
+//   operandSegmentSizes attribute the pin requires (see TTIRFuncTranslator.cpp).
+// * gelu -> "ttir.gelu".
+// * constant -> "ttir.constant" with a dense value attr.
+// * fused_rmsnorm_matmul -> rms_norm + matmul. fused_mlp -> rms_norm + matmul +
+//   broadcast bias add + gelu, with the remaining tail marked unsupported.
 //
-// UNSUPPORTED convention: an op with no study-grounded mapping emits
-// `// UNSUPPORTED: <op> has no TTIR mapping` (never a crash); its results
-// stay unbound, so dependent ops are marked transitively.
+// UNSUPPORTED convention: an op with no mapping emits
+// `// UNSUPPORTED: <op> has no TTIR mapping` (never a crash), and its results
+// stay unbound so dependent ops mark transitively.
 //
-// This is a TERMINAL emission pass (the EmitMetaliumPass convention): the
-// stdout text IS the artifact, so the pass flushes and exits 0 before
+// This is a terminal emission pass (the EmitMetaliumPass convention): the
+// stdout text is the artifact, so the pass flushes and exits 0 before
 // mlir-opt would append the module IR.
 //
 //===----------------------------------------------------------------------===//
@@ -82,10 +73,8 @@ public:
     emitter.emitModule(getOperation());
     llvm::outs().flush();
 
-    // Terminal emission (the EmitMetaliumPass convention): stdout IS the
-    // artifact, so exit 0 before mlir-opt appends the module IR. The text is
-    // standalone TTIR for FileCheck today and for todo 53's gated
-    // ttmlir-opt parse later.
+    // Terminal emission (the EmitMetaliumPass convention): stdout is the
+    // artifact, so exit 0 before mlir-opt appends the module IR.
     std::exit(0);
   }
 };

@@ -1,19 +1,11 @@
-"""TensixFlow Python package: DSL frontend + NumPy golden + correctness harness.
+"""TensixFlow Python package: DSL frontend, NumPy golden, and correctness harness.
 
-Wave 7 exposes the bf16/fp32 rounding contract (draft D14) shared with the C++
-simulator (``lib/tensixflow/Sim/Rounding.h``), the fp32-exact golden (todo 40),
-and the PCC harness (todo 41). Stretch A (Wave 8) adds the ``@tensixflow.jit``
-decorator (todo 46, draft D21 thin builder): it captures a kernel function and is
-NOT a tracing JIT; the explicit DSL builders (todo 47) that construct
-``tensixflow`` MLIR TEXT (``FuncBuilder`` / ``build_func`` + the
-``rmsnorm``/``matmul``/``gelu``/``add``/``residual`` op builders) — explicit
-builder calls, no AST/tracing. The lowering driver (todo 48) lives in the
-``tensixflow.lowering`` submodule (imported on demand by ``JitFunction``, kept out
-of this namespace to avoid an import cycle, exactly like ``harness``/``golden``):
-on a call with NumPy arrays it builds the MLIR text from the kernel's builder
-calls, invokes the built ``tensixflow-opt`` pipeline + ``tensixflow-translate`` for
-the plan JSON (with ``weight_strategy``), and triggers the ``tensixflow-simulate``
-C++ simulator for a result array (``lower_and_run`` / ``LoweredResult``) — CPU only.
+The package exposes the rounding contract shared with the C++ simulator, the
+fp32-exact golden reference, the PCC harness, the explicit DSL builders, and the
+``@tensixflow.jit`` decorator. The lowering driver lives in
+``tensixflow.lowering`` and imports on demand to avoid an import cycle.
+
+Build and test commands are in AGENTS.md.
 """
 
 from tensixflow.builders import (

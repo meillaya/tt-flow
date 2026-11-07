@@ -41,8 +41,8 @@ tensixflow.func @full_chain(%x: tensor<1x2048x4096xbf16>, %gamma: tensor<4096xbf
 
 // Broken chain: rmsnorm -> matmul -> add -> matmul -> add with NO gelu between
 // the adds. The full-chain pattern must NOT fire (no fused_mlp). NOTE: the head
-// rmsnorm->matmul is single-use, so it MAY still fuse to fused_rmsnorm_matmul —
-// that is fine; this test only asserts there is no fused_mlp. Every result is
+// rmsnorm->matmul is single-use, so it MAY still fuse to fused_rmsnorm_matmul;
+// that is fine, since this test only asserts there is no fused_mlp. Every result is
 // kept live (chained to the return) so DCE cannot drop a use.
 
 // CHECK-LABEL: tensixflow.func @no_gelu

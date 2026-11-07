@@ -4,7 +4,8 @@
 
 // Full fusion pipeline (--tensixflow-infer-tile-layout + --tensixflow-fuse-rmsnorm-matmul)
 // on the two example graphs. infer-tile-layout annotates func args with DRAM tile
-// layouts; fusion then collapses the chains into single fused ops with
+// layouts and stamps the selected device (tensixflow.device, default n150);
+// fusion then collapses the chains into single fused ops with
 // eliminated_tensors/eliminated_bytes attrs and a module-level fusion_report counter.
 //
 // Byte arithmetic (all bf16, 2 bytes/element):
@@ -19,7 +20,7 @@
 // RMSNorm -> MatMul fuses to fused_rmsnorm_matmul. The DRAM attrs on func args
 // prove infer-tile-layout ran; the eliminated attrs + fusion_report prove fusion ran.
 
-// CHECK: module attributes {tensixflow.fusion_report = 1 : i64}
+// CHECK: module attributes {tensixflow.device = "n150", tensixflow.fusion_report = 1 : i64}
 // CHECK-LABEL: tensixflow.func @rmsnorm_matmul
 // CHECK-SAME: mem DRAM
 // CHECK: %[[R:[a-z0-9]+]] = tensixflow.fused_rmsnorm_matmul
@@ -37,7 +38,7 @@ tensixflow.func @rmsnorm_matmul(%x: tensor<1x2048x4096xbf16>, %gamma: tensor<409
 
 // Full MLP chain fuses to fused_mlp. Five intermediates eliminated (184549376 bytes).
 
-// CHECK: module attributes {tensixflow.fusion_report = 1 : i64}
+// CHECK: module attributes {tensixflow.device = "n150", tensixflow.fusion_report = 1 : i64}
 // CHECK-LABEL: tensixflow.func @mlp_block
 // CHECK-SAME: mem DRAM
 // CHECK: %[[R:[a-z0-9]+]] = tensixflow.fused_mlp

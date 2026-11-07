@@ -5,19 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The tensixflow -> TTIR text emitter engine (todo 51, Wave 9), in two
-// cooperating classes:
+// The tensixflow -> TTIR text emitter engine, in two cooperating classes:
 //
 // * TTIRTextEmitter: the module-level scaffolding. Prints the banner, walks
 //   the tensixflow.funcs, interns the module-global `#layoutN` =
 //   `#ttcore.metal_layout<...>` aliases (TTIRLayoutAttrs), and assembles
 //   each function's aliases + signature + body.
 // * TTIRFuncTranslator: the per-function op -> TTIR mapping (add/matmul/
-//   rmsnorm/constant/fused ops, the UNSUPPORTED convention).
+//   rmsnorm/gelu/constant/fused ops, the UNSUPPORTED convention).
 //
-// The mapping contract (which op maps to what, D21's TTIR-only scope) is
-// documented on the --tensixflow-emit-ttir pass in
-// lib/tensixflow/Compat/EmitTTIR.cpp.
+// The mapping contract, including the pinned syntax sources, is documented on
+// the --tensixflow-emit-ttir pass in lib/tensixflow/Compat/EmitTTIR.cpp and in
+// docs/ttir.md.
 //
 //===----------------------------------------------------------------------===//
 
@@ -69,7 +68,9 @@ public:
   /// Print the banner plus one TTIR func per tensixflow.func in the module.
   void emitModule(ModuleOp module);
 
-  /// Render `tensor<shape x dtype, #layoutN>` (interning the alias).
+  /// Render `tensor<shape x dtype, #layoutN>` for a rank of at least
+  /// kMinLayoutRank, interning the alias. A lower rank keeps its plain tensor
+  /// type because the pinned metal_layout verifier rejects rank-1 shapes.
   std::string renderTensorType(RankedTensorType type, MemSpace space);
 
 private:
@@ -113,6 +114,11 @@ private:
                                StringRef resultType);
   void emitBinary(llvm::raw_ostream &bos, StringRef ttirOp, Operation &owner,
                   Value lhs, Value rhs, Value result);
+  RenderedValue emitUnaryLine(llvm::raw_ostream &bos, StringRef ttirOp,
+                              const RenderedValue &operand,
+                              StringRef resultType);
+  void emitUnary(llvm::raw_ostream &bos, StringRef ttirOp, Operation &owner,
+                 Value input, Value result);
   std::optional<RenderedValue> emitRmsNorm(llvm::raw_ostream &bos,
                                            Operation &owner, Value input,
                                            Value gamma, FloatAttr epsilon);

@@ -5,28 +5,33 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The host.cpp emitter (Wave 6, todo 34). Given the tile-level schedule IR
-// (a `tensixflow.sched.kernel`) and the module-level #tensixflow.schedule plan,
-// emit a complete, self-consistent host.cpp translation unit that uses the
-// CURRENT tt-metal API only:
+// The host.cpp emitter. Given the lowered schedule IR (a `tensixflow.sched.
+// kernel`) and the module-level #tensixflow.schedule plan, emit a complete,
+// self-checking TT-Metalium host program for the pinned tt-metal release.
 //
-//   distributed::MeshDevice::create_unit_mesh + CreateProgram,
-//   CreateKernel(program, file, core_spec, variant<DataMovementConfig,
-//       ComputeConfig>)  -- the SINGLE current kernel entry point,
-//   CreateCircularBuffer + CircularBufferConfig keyed by tt::CBIndex::c_*,
-//   CreateBuffer(InterleavedBufferConfig) for the DRAM inputs/output,
-//   SetCommonRuntimeArgs / SetRuntimeArgs,
+// The emitted program mirrors tt-metal v0.82.0-rc2
+// programming_examples/matmul/matmul_single_core:
+//
+//   distributed::MeshDevice::create_unit_mesh,
+//   Program CreateProgram(distributed::MeshDevice&),
+//   distributed::MeshCommandQueue& cq = device->mesh_command_queue(),
+//   distributed::MeshBuffer::create(ReplicatedBufferConfig,
+//       DeviceLocalBufferConfig, device),
+//   CircularBufferConfig(total, {{CBIndex, DataFormat::Float16_b}})
+//       .set_page_size(index, tile_bytes),
+//   CreateKernel(program, path, core, DataMovementConfig | ComputeConfig),
+//   SetRuntimeArgs, MeshWorkload::add_program,
 //   distributed::EnqueueWriteMeshBuffer / EnqueueMeshWorkload /
 //       EnqueueReadMeshBuffer.
 //
-// Legacy EnqueueProgram and the per-role CreateDataMovementKernel /
-// CreateComputeKernel overloads are deliberately NEVER emitted (D3/D23).
+// The program computes a deterministic bf16 matmul on one core, compares the
+// device result with a CPU reference matmul, and prints a machine-readable
+// result line:
 //
-// The emitted text compiles `-fsyntax-only` against the signature-only stub
-// headers in kernels/handwritten_baselines/tt_metal_stubs/ (todo 33); the
-// hand-written matmul_single_core_baseline.cpp is the proof-of-what-compiles
-// this emitter mirrors. Todos 35/36 extend this directory with the reader /
-// compute / writer kernel emitters; todo 37 writes the full project tree.
+//   TENSIXFLOW_RESULT {"status":"pass","pcc":<value>,"threshold":<value>}
+//
+// scripts/run_generated.sh parses that line into JSON and uses the process exit
+// code to decide the status.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,11 +48,10 @@ namespace tensixflow {
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
 
-/// Emit a complete host.cpp translation unit (current tt-metal API) for the
-/// given schedule-IR kernel + plan, writing it to `os`. The output is a
-/// standalone TU: it includes "host_api.hpp", opens the host namespace, and
-/// references only symbols the todo-33 stub headers declare, so it compiles
-/// `-fsyntax-only` against them.
+/// Emit the complete host.cpp translation unit for the given schedule-IR
+/// kernel and plan. The caller has already validated the schedule attribute,
+/// the kernel, the absence of a fused plan, and the tensixflow.matmul_shape
+/// attribute (see EmitMetaliumPass.cpp).
 void emitHost(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
               llvm::raw_ostream &os);
 

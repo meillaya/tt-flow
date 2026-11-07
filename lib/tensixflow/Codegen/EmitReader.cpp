@@ -5,194 +5,96 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The reader.cpp emitter (Wave 6, todo 35). See include/tensixflow/Codegen/
-// EmitReader.h for the contract. The emitted TU mirrors the dataflow side of
-// the hand-written kernels/handwritten_baselines/matmul_single_core_baseline.cpp
-// -- the proof-of-what-compiles against the todo-33 stub headers -- using the
-// global-namespace kernel intrinsics (cb_*, noc_async_*, get_noc_addr /
-// get_noc_multicast_addr, get_arg_val / get_compile_time_arg_val).
-//
-// This emits the BRISC data-movement kernel ONLY: it stages activation tiles
-// into in0 and weight tiles into in1 over the NoC. It emits NO compute math
-// (matmul_tiles / rmsnorm / gelu) -- that is compute.cpp (todo 36). The weight
-// is distributed by get_noc_multicast_addr + noc_async_write when the plan's
-// weight strategy is "multicast", else a plain noc_async_read.
+// The reader.cpp emitter. See include/tensixflow/Codegen/EmitReader.h for the
+// contract. The emitted kernel is derived from the pinned tt-metal v0.82.0-rc2
+// programming_examples/matmul/matmul_single_core reader kernel, with the
+// circular-buffer indices taken from the plan's allocation and an attribution
+// comment kept in the generated source.
 //
 //===----------------------------------------------------------------------===//
 
 #include "tensixflow/Codegen/EmitReader.h"
 
+#include "tensixflow/Codegen/EmitCommon.h"
 #include "tensixflow/TensixflowAttrs.h"
 #include "tensixflow/TensixflowSchedule.h"
 
-#include "mlir/IR/BuiltinAttributes.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
 namespace tensixflow {
 
-namespace {
-
-// One circular-buffer slot read off the schedule's parallel index/depth/
-// tile-bytes arrays (the --tensixflow-allocate-circular-buffers output).
-struct CbSpec {
-  int64_t index;
-  int64_t depth;
-  int64_t tileBytes;
-  int64_t bytes() const { return depth * tileBytes; }
-};
-
-// Read the schedule's parallel CB arrays into CbSpecs. Falls back to the
-// documented 3-CB reader/compute/writer pipeline {0,1,16} when the arrays are
-// absent/short so the emission is always a complete, compilable TU.
-SmallVector<CbSpec> readCbSpecs(TensixflowScheduleAttr schedule) {
-  SmallVector<CbSpec> cbs;
-  ArrayAttr indices = schedule.getCbIndices();
-  ArrayAttr depths = schedule.getCbDepths();
-  ArrayAttr tileBytes = schedule.getCbTileBytes();
-  unsigned n = indices.size();
-  if (depths.size() < n)
-    n = depths.size();
-  if (tileBytes.size() < n)
-    n = tileBytes.size();
-  for (unsigned i = 0; i < n; ++i)
-    cbs.push_back({cast<IntegerAttr>(indices[i]).getInt(),
-                   cast<IntegerAttr>(depths[i]).getInt(),
-                   cast<IntegerAttr>(tileBytes[i]).getInt()});
-  if (cbs.size() < 3) {
-    cbs.clear();
-    cbs.push_back({0, 2, 2048});
-    cbs.push_back({1, 2, 2048});
-    cbs.push_back({16, 2, 2048});
-  }
-  return cbs;
-}
-
-// The tile-loop trip count driving a reader/compute/writer region (the first
-// sched.tile_loop nested in it); 1 if the region is empty/absent.
-int64_t tripCount(Operation *op) {
-  int64_t trip = 1;
-  if (op)
-    op->walk([&](TensixflowSchedTileLoopOp loop) {
-      trip = loop.getTripCount();
-      return WalkResult::interrupt();
-    });
-  return trip;
-}
-
-} // namespace
-
 void emitReader(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
                 llvm::raw_ostream &os) {
-  // Pull the reader tile program off the schedule IR.
-  TensixflowSchedReaderOp reader;
-  kernel.walk([&](TensixflowSchedReaderOp op) { reader = op; });
-  int64_t readerTrip = tripCount(reader);
+  (void)kernel;
+  llvm::SmallVector<CbSlot> slots = readCbSlots(schedule);
+  const int64_t in0Index = slots[0].index;
+  const int64_t in1Index = slots[1].index;
 
-  // Plan decisions read off the schedule attribute (never hardcoded).
-  unsigned gridY = schedule.getGridY();
-  unsigned gridX = schedule.getGridX();
-  unsigned endX = gridX > 0 ? gridX - 1 : 0;
-  unsigned endY = gridY > 0 ? gridY - 1 : 0;
-  StringRef fusion = schedule.getFusion().getValue();
-  StringRef weightStrategy = schedule.getWeightStrategy().getValue();
-  bool multicast = weightStrategy == "multicast";
-  SmallVector<CbSpec> cbs = readCbSpecs(schedule);
-  const CbSpec &in0 = cbs[0];
-  const CbSpec &in1 = cbs[1];
-
-  // The multicast fan-out (the number of cores the weight is distributed to);
-  // the lowering records it on the sched.noc_multicast op (== gridY). Read it
-  // off the schedule IR when present, else fall back to the grid height.
-  int64_t numDests = static_cast<int64_t>(gridY);
-  if (reader)
-    reader->walk([&](TensixflowSchedNocMulticastOp mcast) {
-      numDests = mcast.getNumDests();
-      return WalkResult::interrupt();
-    });
-
-  // --- Translation-unit prologue ------------------------------------------
-  os << "//===- reader.cpp - TensixFlow-generated reader (data-movement) ===//\n";
+  os << "//===- kernels/reader.cpp - TensixFlow-generated reader kernel ------===//\n";
   os << "//\n";
   os << "// Auto-generated by tensixflow-opt --tensixflow-emit-metalium. Do not edit.\n";
-  os << "// kernel: " << kernel.getSymName() << "  fusion: " << fusion
-     << "  weight: " << weightStrategy << "  grid: " << gridY << "x" << gridX
-     << "\n";
   os << "//\n";
-  os << "// Reader (BRISC, RISCV_0): stages activation tiles into in0 and weight\n";
-  os << "// tiles into in1 over the NoC. DATA MOVEMENT ONLY -- no compute math\n";
-  os << "// (the tile math lives in compute.cpp). Mirrors tt-metal\n";
-  os << "// reader_single_core_mm.cpp's kernel_main.\n";
-  os << "\n";
-  os << "#include <cstdint>\n";
-  os << "\n";
-  os << "#include \"dataflow_api.h\"\n";
-  os << "#include \"kernel_types.hpp\"\n";
-  os << "\n";
-  os << "namespace dataflow {\n\n";
+  os << "// Role: reader (data movement). Streams the activation and weight tiles\n";
+  os << "// of every output tile into the input circular buffers.\n";
+  os << "//\n";
+  os << "// Derived from tt-metal v0.82.0-rc2\n";
+  os << "// tt_metal/programming_examples/matmul/matmul_single_core/kernels/\n";
+  os << "// dataflow/reader_single_core_mm.cpp (Apache-2.0). The circular-buffer\n";
+  os << "// indices and the tile order come from the TensixFlow plan.\n";
+  os << "//\n";
+  os << "//===----------------------------------------------------------------------===//\n\n";
+  os << "#include <stdint.h>\n\n";
+  os << "#include \"api/dataflow/dataflow_api.h\"\n";
+  os << "#include \"hostdevcommon/kernel_structs.h\"\n\n";
   os << "void kernel_main() {\n";
-
-  // --- Circular-buffer indices (from the schedule allocation) -------------
-  os << "  // Circular-buffer indices (from the schedule allocation; tt::CBIndex).\n";
-  os << "  constexpr auto in0_cb = static_cast<std::uint32_t>(tt::CBIndex::c_"
-     << in0.index << ");\n";
-  os << "  constexpr auto in1_cb = static_cast<std::uint32_t>(tt::CBIndex::c_"
-     << in1.index << ");\n\n";
-
-  // --- Runtime + compile-time args ----------------------------------------
-  os << "  // Runtime args (host SetRuntimeArgs): dest core, src/dst L1 addrs, tile bytes.\n";
-  os << "  const auto dst_x = get_arg_val<std::uint32_t>(0);\n";
-  os << "  const auto dst_y = get_arg_val<std::uint32_t>(1);\n";
-  os << "  const auto src_l1 = get_arg_val<std::uint32_t>(2);\n";
-  os << "  const auto dst_l1 = get_arg_val<std::uint32_t>(3);\n";
-  os << "  const auto tile_bytes = get_arg_val<std::uint32_t>(4);\n\n";
-  os << "  // Compile-time arg 0: the K-tile trip count (the reduction\n";
-  os << "  // dimension); the schedule decomposes it into " << readerTrip
-     << " tiles.\n";
-  os << "  const auto num_tiles = get_compile_time_arg_val<std::uint32_t>(0);\n\n";
-
-  // --- Tile loop ----------------------------------------------------------
-  os << "  for (std::uint32_t t = 0; t < num_tiles; ++t) {\n";
-
-  // Activation: plain NoC read into in0.
-  os << "    // Stage one activation tile into in0 (plain NoC read).\n";
-  os << "    cb_reserve_back(in0_cb, 1);\n";
-  os << "    const std::uint32_t in0_l1 = get_write_ptr(in0_cb);\n";
-  os << "    const std::uint64_t act_src_noc = get_noc_addr(dst_x, dst_y, src_l1);\n";
-  os << "    (void)act_src_noc;\n";
-  os << "    noc_async_read(src_l1, in0_l1, tile_bytes);\n";
-  os << "    noc_async_read_barrier();\n";
-  os << "    cb_push_back(in0_cb, 1);\n\n";
-
-  // Weight: multicast (get_noc_multicast_addr + noc_async_write) or plain read.
-  os << "    // Stage one weight tile into in1.\n";
-  os << "    cb_reserve_back(in1_cb, 1);\n";
-  os << "    const std::uint32_t in1_l1 = get_write_ptr(in1_cb);\n";
-  if (multicast) {
-    os << "    // Weight strategy \"multicast\": fan the weight out across the core\n";
-    os << "    // row (" << numDests
-       << " dests) -- the master-node distribution that eases DRAM contention.\n";
-    os << "    const std::uint64_t w_mcast_noc =\n";
-    os << "        get_noc_multicast_addr(0, 0, " << endX << ", " << endY
-       << ", dst_l1);\n";
-    os << "    (void)w_mcast_noc;\n";
-    os << "    noc_async_write(in1_l1, in1_l1, tile_bytes);\n";
-    os << "    noc_async_write_barrier();\n";
-  } else {
-    os << "    // Weight strategy \"" << weightStrategy
-       << "\": a plain NoC read of the weight tile.\n";
-    os << "    const std::uint64_t w_src_noc = get_noc_addr(dst_x, dst_y, src_l1);\n";
-    os << "    (void)w_src_noc;\n";
-    os << "    noc_async_read(src_l1, in1_l1, tile_bytes);\n";
-    os << "    noc_async_read_barrier();\n";
-  }
-  os << "    cb_push_back(in1_cb, 1);\n";
-  os << "  }\n";
-
-  os << "}\n\n";
-  os << "}  // namespace dataflow\n";
+  os << "    // Runtime args: the two DRAM buffer addresses and the (M, K, N) tile\n";
+  os << "    // decomposition, in the order the host sets them.\n";
+  os << "    uint32_t src0_addr = get_arg_val<uint32_t>(0);\n";
+  os << "    uint32_t src1_addr = get_arg_val<uint32_t>(1);\n";
+  os << "    uint32_t Mt = get_arg_val<uint32_t>(2);\n";
+  os << "    uint32_t Kt = get_arg_val<uint32_t>(3);\n";
+  os << "    uint32_t Nt = get_arg_val<uint32_t>(4);\n\n";
+  os << "    // Circular-buffer indices from the plan allocation.\n";
+  os << "    constexpr uint32_t cb_id_in0 = static_cast<uint32_t>(tt::CBIndex::c_"
+     << in0Index << ");\n";
+  os << "    constexpr uint32_t cb_id_in1 = static_cast<uint32_t>(tt::CBIndex::c_"
+     << in1Index << ");\n\n";
+  os << "    // One TensorAccessor per DRAM input buffer. The host appended the\n";
+  os << "    // matching compile-time args in this order.\n";
+  os << "    constexpr auto s0_args = TensorAccessorArgs<0>();\n";
+  os << "    const auto s0 = TensorAccessor(s0_args, src0_addr);\n";
+  os << "    constexpr auto s1_args =\n";
+  os << "        TensorAccessorArgs<s0_args.next_compile_time_args_offset()>();\n";
+  os << "    const auto s1 = TensorAccessor(s1_args, src1_addr);\n\n";
+  os << "    // Walk output tiles in row-major order and stream the K tiles of\n";
+  os << "    // each, so the compute kernel sees one (A tile, B tile) pair per\n";
+  os << "    // reduction step in the same order the host packed the buffers.\n";
+  os << "    for (uint32_t mt = 0; mt < Mt; ++mt) {\n";
+  os << "        for (uint32_t nt = 0; nt < Nt; ++nt) {\n";
+  os << "            for (uint32_t kt = 0; kt < Kt; ++kt) {\n";
+  os << "                {\n";
+  os << "                    // A tile at (mt, kt). A is MxK, so the index strides by Kt.\n";
+  os << "                    uint32_t a_tile_index = mt * Kt + kt;\n";
+  os << "                    cb_reserve_back(cb_id_in0, 1);\n";
+  os << "                    uint32_t l1_write_addr_in0 = get_write_ptr(cb_id_in0);\n";
+  os << "                    noc_async_read_page(a_tile_index, s0, l1_write_addr_in0);\n";
+  os << "                    noc_async_read_barrier();\n";
+  os << "                    cb_push_back(cb_id_in0, 1);\n";
+  os << "                }\n";
+  os << "                {\n";
+  os << "                    // B tile at (kt, nt). B is KxN, so the index strides by Nt.\n";
+  os << "                    uint32_t b_tile_index = kt * Nt + nt;\n";
+  os << "                    cb_reserve_back(cb_id_in1, 1);\n";
+  os << "                    uint32_t l1_write_addr_in1 = get_write_ptr(cb_id_in1);\n";
+  os << "                    noc_async_read_page(b_tile_index, s1, l1_write_addr_in1);\n";
+  os << "                    noc_async_read_barrier();\n";
+  os << "                    cb_push_back(cb_id_in1, 1);\n";
+  os << "                }\n";
+  os << "            }\n";
+  os << "        }\n";
+  os << "    }\n";
+  os << "}\n";
 }
 
 } // namespace tensixflow

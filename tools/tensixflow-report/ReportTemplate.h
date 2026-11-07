@@ -1,13 +1,17 @@
 //===- ReportTemplate.h -----------------------------------------*- C++ -*-===//
 //
-// The self-contained HTML template for the TensixFlow visualizer (todo 43, D21).
-// Pure template DATA: the inline CSS, the static section containers (the six
-// required anchors), and the vanilla inline JS that statically renders the plan
-// into them. There are NO external resources here — no https?:// URLs, no
-// <script src>, no CDN, no @import, no url(), no CSS animation/transition. The
-// JS runs ONCE on load and builds the DOM (no event handlers, no interactivity
-// beyond static layout). The plan JSON is embedded inline by the tool as
-// `const PLAN = {...}` before kJs runs.
+// The self-contained HTML template for the TensixFlow visualizer. Pure template
+// data: the inline CSS, the static section containers (the six required
+// anchors), and the vanilla inline JS that statically renders the plan into
+// them. There are no external resources here: no https?:// URLs, no
+// <script src>, no CDN, no @import, no url(), no animation and no transition.
+// The JS runs once on load and builds the DOM, with no event handlers and no
+// interactivity beyond static layout. The plan JSON is embedded inline by the
+// tool as `const PLAN = {...}` before kJs runs.
+//
+// Every rendered number is a projected static estimate. The device block in the
+// plan names the hardware the projection assumes; the JS prints that name so a
+// reader can never mistake a projection for a measurement.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,7 +22,7 @@ namespace mlir {
 namespace tensixflow {
 namespace report {
 
-// Inline CSS (dark, static). No url()/@import/animation/transition.
+// Inline CSS (dark, static). No url(), @import, animation or transition.
 constexpr const char kCss[] = R"tfcss(
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
@@ -42,7 +46,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar > span.hot { background: #f85149; }
 .badge { display: inline-block; padding: 3px 12px; border-radius: 12px; font-size: 12px; font-weight: 700; text-transform: uppercase; }
 .badge.compute { background: #1f6feb33; color: #58a6ff; border: 1px solid #1f6feb; }
-.badge.memory { background: #d2992233; color: #d29922; border: 1px solid #d29922; }
+.badge.dram { background: #d2992233; color: #d29922; border: 1px solid #d29922; }
+.badge.noc { background: #a371f733; color: #bc8cff; border: 1px solid #a371f7; }
 .badge.balanced { background: #3fb95033; color: #3fb950; border: 1px solid #3fb950; }
 ul.suggestions { margin: 8px 0 0; padding-left: 20px; }
 ul.suggestions li { margin: 4px 0; }
@@ -57,14 +62,14 @@ ul.suggestions li { margin: 4px 0; }
 .muted { color: #8b949e; }
 )tfcss";
 
-// The six section containers. The id attributes ARE the required anchors
-// (#core-grid #shards #noc-routes #cb-usage #timeline #bottlenecks); they are
-// present in the static markup so the anchors exist even before the JS runs. The
-// JS fills each section's .body div from the embedded PLAN.
+// The six section containers. The id attributes are the required anchors
+// (#core-grid #shards #noc-routes #cb-usage #timeline #bottlenecks); the static
+// markup keeps the anchors present even before the JS runs, and the JS fills
+// each section's .body div from the embedded PLAN.
 constexpr const char kSections[] = R"tfhtml(
 <header>
   <h1>TensixFlow Plan Report</h1>
-  <div class="sub" id="subtitle">self-contained offline visualizer</div>
+  <div class="sub" id="subtitle">projected static estimate</div>
 </header>
 <main>
   <section class="panel" id="core-grid"><h2>Core Grid</h2><div class="body"></div></section>
@@ -72,28 +77,30 @@ constexpr const char kSections[] = R"tfhtml(
   <section class="panel" id="noc-routes"><h2>NoC Routes</h2><div class="body"></div></section>
   <section class="panel" id="cb-usage"><h2>Circular Buffer Usage</h2><div class="body"></div></section>
   <section class="panel" id="timeline"><h2>Kernel Pipeline Timeline</h2><div class="body"></div></section>
-  <section class="panel" id="bottlenecks"><h2>Estimated Bottlenecks</h2><div class="body"></div></section>
+  <section class="panel" id="bottlenecks"><h2>Projected Bottlenecks</h2><div class="body"></div></section>
 </main>
 )tfhtml";
 
-// Vanilla inline JS (no framework). Statically renders the embedded PLAN into the
-// six section bodies on load. No event handlers, no fetch/import/eval, no
-// animation. BUDGET is the modeled per-core CB shard budget (L1Model.h: 1 MiB
-// total - 64 KiB reserve = 960 KiB = 983040 bytes).
+// Vanilla inline JS (no framework). Statically renders the embedded PLAN into
+// the six section bodies on load. No event handlers, no fetch, no import, no
+// eval, no animation. BUDGET is the device's usable L1 bytes per core from the
+// plan's device block; occupancy is projected against that ceiling, not against
+// a hand-written number.
 constexpr const char kJs[] = R"tfjs(
 (function () {
   var plan = (typeof PLAN !== 'undefined') ? PLAN : null;
   if (!plan) { return; }
-  var BUDGET = 983040;
+  var device = plan.device;
+  var BUDGET = device.l1_usable_bytes;
   function body(id) { return document.querySelector('#' + id + ' .body'); }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
   function fmt(n) { return Number(n).toLocaleString('en-US'); }
 
   var st = document.getElementById('subtitle');
-  if (st) { st.textContent = 'graph: ' + plan.graph_id + ' | ' + plan.layout.activation_sharding + ' activations | ' + plan.layout.weight_strategy + ' weights'; }
+  if (st) { st.textContent = 'projected | device: ' + device.name + ' (' + device.arch + ') | graph: ' + plan.graph_id + ' | ' + plan.layout.activation_sharding + ' activations | ' + plan.layout.weight_strategy + ' weights'; }
 
   var gy = plan.shard_grid.grid_y, gx = plan.shard_grid.grid_x;
-  var h = '<p class="cap">' + gy + ' x ' + gx + ' core grid (' + fmt(gy * gx) + ' cores)</p>';
+  var h = '<p class="cap">projected ' + gy + ' x ' + gx + ' Tensix compute grid on ' + esc(device.name) + ' (' + fmt(gy * gx) + ' cores per die, ' + fmt(device.l1_usable_bytes) + ' bytes usable L1 per core)</p>';
   h += '<div class="grid" style="grid-template-columns:repeat(' + gx + ',1fr)">';
   for (var y = 0; y < gy; y++) { for (var x = 0; x < gx; x++) { h += '<div class="core">' + y + ',' + x + '</div>'; } }
   h += '</div>';
@@ -105,18 +112,18 @@ constexpr const char kJs[] = R"tfjs(
     h += '<tr><td>' + esc(t.name) + '</td><td>' + esc(t.shape.join(' x ')) + '</td><td>' + esc(t.dtype) + '</td><td>' + esc(t.placement) + '</td></tr>';
   }
   h += '</tbody></table>';
-  h += '<p class="flow">activation sharding: ' + esc(plan.layout.activation_sharding) + ' | weight strategy: ' + esc(plan.layout.weight_strategy) + '</p>';
+  h += '<p class="flow">projected activation sharding: ' + esc(plan.layout.activation_sharding) + ' | projected weight strategy: ' + esc(plan.layout.weight_strategy) + '</p>';
   body('shards').innerHTML = h;
 
   var noc = plan.noc;
-  h = '<table><thead><tr><th>route</th><th class="num">bytes</th></tr></thead><tbody>';
+  h = '<table><thead><tr><th>projected route</th><th class="num">bytes</th></tr></thead><tbody>';
   h += '<tr><td>DRAM read</td><td class="num">' + fmt(noc.dram_read_bytes) + '</td></tr>';
   h += '<tr><td>DRAM write</td><td class="num">' + fmt(noc.dram_write_bytes) + '</td></tr>';
   h += '<tr><td>L1 (on-chip)</td><td class="num">' + fmt(noc.l1_bytes) + '</td></tr>';
   h += '<tr><td>NoC multicast</td><td class="num">' + fmt(noc.multicast_bytes) + '</td></tr>';
   h += '</tbody></table>';
-  h += '<p class="flow">DRAM &#8594; cores (read) &#8594; L1 &#8594; compute &#8594; DRAM (write)';
-  if (noc.multicast_bytes > 0) { h += ' | multicast: weight tiles fanned out across rows via row master nodes'; }
+  h += '<p class="flow">projected DRAM &#8594; cores (read) &#8594; L1 &#8594; compute &#8594; DRAM (write)';
+  if (noc.multicast_bytes > 0) { h += ' | projected multicast: weight tiles fanned out across rows via row master nodes'; }
   h += '</p>';
   body('noc-routes').innerHTML = h;
 
@@ -129,11 +136,11 @@ constexpr const char kJs[] = R"tfjs(
   h += '</tbody></table>';
   var occ = BUDGET > 0 ? total / BUDGET : 0, pct = Math.round(occ * 100);
   var cls = occ > 1 ? 'hot' : (occ > 0.85 ? 'warn' : '');
-  h += '<p class="cap">per-core CB occupancy: ' + fmt(total) + ' / ' + fmt(BUDGET) + ' bytes (' + pct + '%)</p>';
+  h += '<p class="cap">projected per-core L1 occupancy: ' + fmt(total) + ' / ' + fmt(BUDGET) + ' bytes usable L1 (' + pct + '%)</p>';
   h += '<div class="bar"><span class="' + cls + '" style="width:' + Math.min(pct, 100) + '%"></span></div>';
   body('cb-usage').innerHTML = h;
 
-  h = '<p class="cap">reader / compute / writer stages overlap across the tile loop (static schedule schematic)</p>';
+  h = '<p class="cap">projected reader / compute / writer stages overlap across the tile loop (static schedule schematic)</p>';
   var lanes = [
     { name: 'reader', color: '#58a6ff', label: 'noc_read in0/in1', left: 0, width: 55 },
     { name: 'compute', color: '#3fb950', label: 'rmsnorm + matmul_tiles', left: 20, width: 60 },
@@ -148,10 +155,11 @@ constexpr const char kJs[] = R"tfjs(
   body('timeline').innerHTML = h;
 
   var perf = plan.perf;
-  h = '<p><span class="badge ' + esc(perf.bottleneck) + '">' + esc(perf.bottleneck) + '</span></p>';
-  h += '<p><span class="metric"><span class="v">' + fmt(perf.est_cycles) + '</span> <span class="k">est cycles</span></span>';
-  h += '<span class="metric"><span class="v">' + Math.round(perf.compute_util * 100) + '%</span> <span class="k">compute util</span></span></p>';
-  h += '<p class="cap">suggested optimizations</p><ul class="suggestions">';
+  h = '<p class="cap">projected binding constraint on ' + esc(device.name) + '</p>';
+  h += '<p><span class="badge ' + esc(perf.bottleneck) + '">' + esc(perf.bottleneck) + '</span></p>';
+  h += '<p><span class="metric"><span class="v">' + fmt(perf.est_cycles) + '</span> <span class="k">projected cycles</span></span>';
+  h += '<span class="metric"><span class="v">' + Math.round(perf.compute_util * 100) + '%</span> <span class="k">projected compute util</span></span></p>';
+  h += '<p class="cap">projected suggested optimizations</p><ul class="suggestions">';
   for (i = 0; i < perf.suggestions.length; i++) { h += '<li>' + esc(perf.suggestions[i]) + '</li>'; }
   if (perf.suggestions.length === 0) { h += '<li class="muted">(none)</li>'; }
   h += '</ul>';

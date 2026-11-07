@@ -1,14 +1,14 @@
 //===- PlanSchema.h ---------------------------------------------*- C++ -*-===//
 //
-// TensixFlow plan/perf/viz data model — the SINGLE SOURCE OF TRUTH (D15) for
-// the JSON contract shared by the scheduler (Wave 5), the plan/perf report
-// (todo 30), and the HTML visualizer (todo 43). Plain data + llvm::json only;
-// NO MLIR dependency, so any stage can link the small MLIRTensixflowSchema lib
-// without dragging in the dialect.
+// TensixFlow plan/perf/viz data model: the single source of truth for the JSON
+// contract shared by the scheduler, the plan/perf report, and the HTML
+// visualizer. Plain data plus llvm::json only; no MLIR dependency, so any stage
+// can link the small MLIRTensixflowSchema library without the dialect.
 //
-// JSON field names are snake_case to match the user spec's report format
-// (graph_id, dram_read_bytes, weight_strategy, ...). See schema/plan.schema.json
-// for the validation contract and docs/schema.md for field documentation.
+// JSON field names are snake_case to match the project report format
+// (graph_id, dram_read_bytes, weight_strategy, ...). schema/plan.schema.json is
+// the validation contract. Every numeric estimate in a Plan is projected from a
+// static model, never measured on hardware.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,7 +38,21 @@ struct TensorDesc {
   std::string placement;
 };
 
-/// The core grid the plan maps onto (e.g. an 8x8 Wormhole n150 grid).
+/// The device the plan was scheduled for. The values are copied from
+/// spec/devices.json through the generated DeviceSpecs.h table; clock and NoC
+/// rates stay out of the JSON because the perf model resolves the full spec by
+/// name. The name must exist in the generated table.
+struct DeviceInfo {
+  std::string name;
+  std::string arch;
+  int64_t gridX = 0;
+  int64_t gridY = 0;
+  int64_t l1UsableBytes = 0;
+  int64_t flopsPerCyclePerCore = 0;
+  int64_t dramBandwidthBytesPerSecond = 0;
+};
+
+/// The core grid the plan maps onto (the device's compute grid).
 struct ShardGrid {
   int64_t gridY = 0;
   int64_t gridX = 0;
@@ -74,8 +88,8 @@ struct PerfEstimate {
   std::vector<std::string> suggestions;
 };
 
-/// Lightweight placeholders for the HTML visualizer sections (todo 43 fills the
-/// real detail). Kept as opaque strings so the schema is stable before the viz.
+/// Placeholders for the HTML visualizer sections. Kept as opaque strings so the
+/// schema is stable before the visualizer fills the detail.
 struct VizSections {
   std::string coreGrid;
   std::string shards;
@@ -88,6 +102,7 @@ struct VizSections {
 /// consumes.
 struct Plan {
   std::string graphId;
+  DeviceInfo device;
   std::vector<TensorDesc> tensors;
   Layout layout;
   ShardGrid shardGrid;
@@ -98,12 +113,13 @@ struct Plan {
 };
 
 /// Serialize a plan to pretty-printed JSON (indent 2, trailing newline). The
-/// output is guaranteed parseable by llvm::json::parse and by python json.load.
+/// output parses with llvm::json::parse and with python json.load.
 std::string toJson(const Plan &plan);
 
 /// Parse a plan field-for-field from a JSON value. Returns std::nullopt if the
-/// value is not an object or any required field is missing / wrongly typed —
-/// this is the validation seam: a malformed plan is rejected, not defaulted.
+/// value is not an object or any required field is missing or wrongly typed.
+/// A malformed plan, including one without a device block, is rejected rather
+/// than defaulted.
 std::optional<Plan> parsePlan(const llvm::json::Value &value);
 
 } // namespace tensixflow

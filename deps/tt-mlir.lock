@@ -1,0 +1,48 @@
+# Pinned tt-mlir release. The released Python wheel is the only prebuilt
+# tt-mlir artifact, so this release is both the TTIR syntax contract and the
+# parser used to validate emitted TTIR. The annotated tag points at the commit
+# below, and every fixture URL is built from that commit so the file contents
+# cannot drift when a nightly tag is rebuilt.
+#
+# Update the tag, the wheel digest, and the fixture digests together. Re-run
+# scripts/fetch_ttmlir_fixtures.sh after any change; it verifies every digest.
+
+TT_MLIR_TAG=0.9.0.dev20260221
+
+# Annotated tag object and the commit it resolves to (git ls-remote --tags and
+# the GitHub tags API agree). The release's target_commitish metadata records a
+# different commit and is not the tree this pin uses.
+TT_MLIR_TAG_OBJECT=f305713d0997b64f41420d3b2a948db0566e20a9
+TT_MLIR_COMMIT=5f396fd6ef85780bf1b6b85bef9c7d2f84a85f3c
+
+# Wheel: CPython 3.11, manylinux 2.34, x86_64. Contains ttmlir.ir, ttmlir.passmanager,
+# and the ttcore, ttir, ttnn, d2m, ttkernel, and ttmetal dialects. There is no
+# ttmlir-opt executable in the release, so the bindings are the only parser.
+TT_MLIR_RELEASE_BASE=https://github.com/tenstorrent/tt-mlir/releases/download/0.9.0.dev20260221
+TT_MLIR_WHEEL=ttmlir-0.9.0.dev20260221-cp311-cp311-manylinux_2_34_x86_64.whl
+TT_MLIR_WHEEL_SHA256=37b8fd1e7ee1d12b1ba531df9e63038db3cbea97acab2f21547083b4a5bb962e
+
+# Raw file source for the fixtures and the grammar definitions below.
+TT_MLIR_RAW_BASE=https://raw.githubusercontent.com/tenstorrent/tt-mlir/5f396fd6ef85780bf1b6b85bef9c7d2f84a85f3c
+
+# Fixture and grammar files, as "sha256 path" pairs. TTIR op tests are the
+# positive and negative forms of the ops the emitter writes; TTCore tests are
+# the layout attribute syntax and verifier contract; the TableGen and C++
+# sources define the grammar and the defaults the emitter mirrors. Each file is
+# stored under .deps/ttmlir/fixtures/ at its repository-relative path.
+TT_MLIR_FILES="
+04ee3bdf78aba6ae094bbb6395f0b7f6729949b6c9787303f1147d18a266a454 test/ttmlir/Dialect/TTIR/fusing/rms_norm_fusion.mlir
+76d3ad9f04cb04791694200fabdfe69e87dcd4ba5ed9554e099ed9e4dbe4cf16 test/ttmlir/Dialect/TTIR/ttir_rms_norm_negative.mlir
+f43585cdc160af6b29b4e331d8308694a3212f5070e9638f2bcae872bafeb8c5 test/ttmlir/Dialect/TTIR/fusing/gelu_fusing.mlir
+f90120760b281445905274a677a524f4939d72b83d5f78c3661d8645b82f459d test/ttmlir/Dialect/TTIR/fusing/matmul_with_bias_positive.mlir
+a1e18d79e68d300865be72d07e56e460b53725906d92a8b971dd25aef3cd25ca test/ttmlir/Dialect/TTIR/creation/constant/simple_constant_negative.mlir
+62a96a7874a2cd55483216944107a079ca19a316919513b38124b7399100f578 test/ttmlir/Dialect/TTIR/hoist/simple_add.mlir
+77a904a8f8e2d3036fd94c978c22423a876e88d7a2c2dafdd450f6a49ba22292 test/ttmlir/Dialect/TTIR/matmul/matmul_tests_negative.mlir
+ff253c36f7a6eafdc05e7053f3aa7bd8e64c10e30e13287d1a5487873a68db31 test/ttmlir/Dialect/TTCore/metal_layout_attr_verify.mlir
+ad94e583aad13c9637fc1d2b70e3f968eeca20198e7825ae2585516403dccbe5 test/ttmlir/Dialect/TTIR/canonicalize/ttnn_metal_layout_cast_canonicalize.mlir
+9c143ee99cc959c5f6c0ba994b2b9964224021e4b27ab7a1f026b73e7caff2fb include/ttmlir/Dialect/TTIR/IR/TTIROps.td
+1d25f920d52ba0a06b81954ed3d7919ef92ea60d106b9fc4f3c976dcc30e22e0 include/ttmlir/Dialect/TTIR/IR/TTIRBase.td
+dfbe5fb478fe0759d3712c5f46fc519c007abba2b9bf9d76fbbc6f10abc1dddf include/ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td
+03b3f43bf16e8410fb0c654b405bc1226cb0125d8fc62feee856ea8d545e1673 include/ttmlir/Dialect/TTCore/IR/TTCoreOpsEnums.td
+eb25a5d2b6194aa176140edd9f31910d0e12691bab6f4dfe1683787e627c6f6d lib/Dialect/TTCore/IR/TTCoreOpsTypes.cpp
+"

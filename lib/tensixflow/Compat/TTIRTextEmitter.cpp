@@ -23,25 +23,25 @@ namespace mlir {
 namespace tensixflow {
 
 void TTIRTextEmitter::emitModule(ModuleOp module) {
-  os << "// ===== tensixflow -> TTIR (--tensixflow-emit-ttir, todo 51) =====\n"
-     << "// TTIR only, per draft D21: TTNN/D2M/TTKernel/TTMetal stay prose\n"
-     << "// mappings in docs/tenstorrent_mapping.md, never emitted as code.\n"
-     << "// Syntax contract: docs/ttmlir_study.md (tt-mlir @9f06802f).\n"
-     << "// Memory-space prose mapping: intermediates live in\n"
-     << "// #ttcore.memory_space<l1> and function inputs in\n"
-     << "// #ttcore.memory_space<dram>, spelled `l1`/`dram` inside each\n"
-     << "// #ttcore.metal_layout below; the #ttcore.memory_space<l1> attr\n"
-     << "// itself is the memref-level (D2M) spelling this emitter does not\n"
-     << "// produce. Unmapped ops emit `// UNSUPPORTED: <op> has no TTIR\n"
-     << "// mapping` markers (never a crash).\n";
+  os << "// ===== tensixflow -> TTIR (--tensixflow-emit-ttir) =====\n"
+     << "// Syntax contract: tt-mlir 0.9.0.dev20260221 (deps/tt-mlir.lock),\n"
+     << "// checked by the released tt-mlir parser in\n"
+     << "// python/tensixflow/tests/test_ttir_parse.py. Tensor placement\n"
+     << "// rides in #ttcore.metal_layout aliases with the pinned field order:\n"
+     << "// logical shape, dim alignments, collapse intervals, OOB value,\n"
+     << "// memory space, memory layout, index map. Rank-1 tensors keep a\n"
+     << "// plain type because the pinned verifier rejects a rank-1 logical\n"
+     << "// shape. Ops with no TTIR mapping emit an UNSUPPORTED comment marker\n"
+     << "// naming the op, never a crash.\n";
   module.walk([&](TensixflowFuncOp func) { emitFunc(func); });
 }
 
 unsigned TTIRTextEmitter::internLayout(RankedTensorType type, MemSpace space) {
   auto key = std::make_pair(type, space);
   auto it = layouts.find(key);
-  if (it != layouts.end())
+  if (it != layouts.end()) {
     return it->second;
+  }
   unsigned idx = layouts.size();
   layouts.insert({key, idx});
   return idx;
@@ -49,6 +49,14 @@ unsigned TTIRTextEmitter::internLayout(RankedTensorType type, MemSpace space) {
 
 std::string TTIRTextEmitter::renderTensorType(RankedTensorType type,
                                               MemSpace space) {
+  // The pinned metal_layout verifier rejects a rank-1 logical shape, so a
+  // rank-1 weight or result keeps a plain tensor type.
+  if (type.getRank() < kMinLayoutRank) {
+    std::string plain;
+    llvm::raw_string_ostream ss(plain);
+    ss << type;
+    return plain;
+  }
   unsigned idx = internLayout(type, space);
   std::string text;
   llvm::raw_string_ostream ss(text);
@@ -62,8 +70,9 @@ std::string TTIRTextEmitter::renderTensorType(RankedTensorType type,
 
 void TTIRTextEmitter::printNewLayoutAliases() {
   for (const auto &[key, idx] : layouts) {
-    if (idx < nextPrintedLayout)
+    if (idx < nextPrintedLayout) {
       continue;
+    }
     os << "#layout" << idx << " = ";
     printMetalLayout(os, key.first, key.second);
     os << "\n";

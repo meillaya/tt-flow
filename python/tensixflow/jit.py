@@ -1,16 +1,11 @@
-"""TensixFlow ``@jit`` decorator (Stretch A; draft D21 thin builder).
+"""TensixFlow ``@jit`` decorator.
 
-D21 GUARDRAIL: this is a THIN BUILDER, NOT a tracing JIT and NOT an AST
-compiler. ``jit`` CAPTURES the user's kernel function and nothing more: it does
-not inspect, parse, trace, or execute the function body at decoration time. The
-kernel makes EXPLICIT builder calls (todo 47); on a call with real NumPy arrays
-the lowering driver (todo 48, :mod:`tensixflow.lowering`) builds the
-``tensixflow`` MLIR text from those calls, runs the ``tensixflow-opt`` pipeline +
-the C++ simulator, and returns a :class:`tensixflow.lowering.LoweredResult`.
-
-A call that is NOT positional NumPy arrays (scalars, mixed args, kwargs) keeps
-the EAGER fallback: it runs the captured Python function directly, so decorated
-kernels stay runnable during bring-up.
+``jit`` captures the user's kernel function and nothing more: it does not
+inspect, parse, trace, or execute the body at decoration time. A call with
+positional NumPy arrays routes through ``tensixflow.lowering``, which builds the
+``tensixflow`` MLIR text from the kernel's explicit builder calls, runs the
+compiler pipeline, and returns a lowered result. A call with any other argument
+shape runs the captured Python function directly.
 """
 
 from __future__ import annotations
@@ -48,12 +43,12 @@ class JitTypeError(TypeError):
 class JitFunction(Generic[_P, _R]):
     """A kernel captured by ``@tensixflow.jit``.
 
-    Holds the user function for MLIR emission (todo 47/48). The instance is
+    Holds the user function for MLIR emission. The instance is
     immutable after construction; ``functools.update_wrapper`` copies the wrapped
     function's ``__name__``/``__doc__``/``__wrapped__`` metadata onto it so the
     decorated object still reads like the original kernel.
 
-    Calling it with positional NumPy arrays LOWERS the kernel (todo 48): the driver
+    Calling it with positional NumPy arrays LOWERS the kernel: the driver
     builds the MLIR text from the function's explicit builder calls, runs the
     ``tensixflow-opt`` pipeline + the C++ simulator, and returns a
     :class:`tensixflow.lowering.LoweredResult` (plan JSON + result array). Any other
@@ -72,7 +67,7 @@ class JitFunction(Generic[_P, _R]):
         return self._fn
 
     def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R | LoweredResult:
-        # Dispatch (todo 48): positional NumPy arrays LOWER the kernel (build MLIR
+        # Dispatch: positional NumPy arrays LOWER the kernel (build MLIR
         # from its builder calls, drive the tensixflow-opt pipeline + simulator,
         # return a LoweredResult); any other call keeps the eager fallback (returns
         # the captured function's own result _R) so decorated kernels stay runnable
@@ -88,7 +83,7 @@ class JitFunction(Generic[_P, _R]):
 
 
 def jit(fn: Callable[_P, _R]) -> JitFunction[_P, _R]:
-    """Capture a kernel function for later MLIR emission (thin scaffold, D21).
+    """Capture a kernel function for later MLIR emission.
 
     Usage::
 

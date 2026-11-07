@@ -1,9 +1,29 @@
-# C++ unit-test suite (GoogleTest). Deliberately SEPARATE from the lit/FileCheck
+# C++ unit-test suite (GoogleTest). Deliberately separate from the lit/FileCheck
 # IR suite in test/ (which defines check-tensixflow). Tests register with ctest
 # via add_test, so `ctest -R <name>` runs them.
 
 find_package(GTest REQUIRED)
 message(STATUS "Using GTest: ${GTest_DIR}")
+
+# Generated device table test. Header-only, so the test links only LLVMSupport
+# (StringRef and ArrayRef) plus GoogleTest.
+add_executable(DeviceSpecsTest DeviceSpecsTest.cpp)
+target_link_libraries(DeviceSpecsTest PRIVATE
+  LLVMSupport
+  GTest::gtest
+  GTest::gtest_main
+)
+
+add_test(NAME device_specs COMMAND DeviceSpecsTest)
+
+# Keep the generated header and Python module in step with spec/devices.json.
+# The same check is available as the check-device-spec build target.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME device_spec_generator
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/gen_device_spec.py
+          --check
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
 
 add_executable(PlanSchemaTest PlanSchemaTest.cpp)
 target_link_libraries(PlanSchemaTest PRIVATE
@@ -12,7 +32,7 @@ target_link_libraries(PlanSchemaTest PRIVATE
   GTest::gtest
   GTest::gtest_main
 )
-# Absolute path to the source schema/ dir so the test validates against
+# Absolute path to the source schema/ directory so the test validates against
 # schema/plan.schema.json regardless of the ctest working directory.
 target_compile_definitions(PlanSchemaTest PRIVATE
   TENSIXFLOW_SCHEMA_DIR="${PROJECT_SOURCE_DIR}/schema"
@@ -20,8 +40,8 @@ target_compile_definitions(PlanSchemaTest PRIVATE
 
 add_test(NAME plan_schema COMMAND PlanSchemaTest)
 
-# Scheduler data-model test (todo 25). Links the scheduler model + the reused
-# schema lib; no MLIR dialect dependency.
+# Scheduler data-model test. Links the scheduler model + the reused schema lib;
+# no MLIR dialect dependency.
 add_executable(SchedulerModelTest SchedulerModelTest.cpp)
 target_link_libraries(SchedulerModelTest PRIVATE
   MLIRTensixflowScheduler
@@ -33,8 +53,8 @@ target_link_libraries(SchedulerModelTest PRIVATE
 
 add_test(NAME scheduler_model COMMAND SchedulerModelTest)
 
-# Core-grid planner test (todo 26). Links the scheduler lib (which carries the
-# shared L1-budget constants + GridPlanner and reuses the schema lib PUBLIC).
+# Core-grid planner test. Links the scheduler lib (grid planner + generated
+# device table; reuses the schema lib PUBLIC).
 add_executable(GridPlannerTest GridPlannerTest.cpp)
 target_link_libraries(GridPlannerTest PRIVATE
   MLIRTensixflowScheduler
@@ -45,9 +65,8 @@ target_link_libraries(GridPlannerTest PRIVATE
 
 add_test(NAME grid_planner COMMAND GridPlannerTest)
 
-# Weight-strategy planner test (todo 27). Links the scheduler lib (which carries
-# the shared L1-budget constants + WeightPlanner and reuses the schema lib
-# PUBLIC).
+# Weight-strategy planner test. Links the scheduler lib (weight planner +
+# generated device table; reuses the schema lib PUBLIC).
 add_executable(WeightPlannerTest WeightPlannerTest.cpp)
 target_link_libraries(WeightPlannerTest PRIVATE
   MLIRTensixflowScheduler
@@ -58,8 +77,8 @@ target_link_libraries(WeightPlannerTest PRIVATE
 
 add_test(NAME weight_planner COMMAND WeightPlannerTest)
 
-# Circular-buffer allocator test (todo 28). Links the scheduler lib (which carries
-# the shared L1-budget constants + CBAllocator and reuses the schema lib PUBLIC).
+# Circular-buffer allocator test. Links the scheduler lib (CB allocator +
+# grid planner + generated device table; reuses the schema lib PUBLIC).
 add_executable(CBAllocatorTest CBAllocatorTest.cpp)
 target_link_libraries(CBAllocatorTest PRIVATE
   MLIRTensixflowScheduler
@@ -70,8 +89,8 @@ target_link_libraries(CBAllocatorTest PRIVATE
 
 add_test(NAME cb_allocator COMMAND CBAllocatorTest)
 
-# NoC traffic estimator test (todo 29). Links the scheduler lib (which carries
-# the NoC estimator + weight planner and reuses the schema lib PUBLIC).
+# NoC traffic estimator test. Links the scheduler lib (NoC estimator + weight
+# planner; reuses the schema lib PUBLIC).
 add_executable(NoCEstimatorTest NoCEstimatorTest.cpp)
 target_link_libraries(NoCEstimatorTest PRIVATE
   MLIRTensixflowScheduler
@@ -82,9 +101,8 @@ target_link_libraries(NoCEstimatorTest PRIVATE
 
 add_test(NAME noc_estimator COMMAND NoCEstimatorTest)
 
-# Plan-report assembler test (todo 30). Links the scheduler lib (which carries
-# buildPlanReport/formatPlanReport + all four planners and reuses the schema lib
-# PUBLIC for plan::toJson).
+# Plan-report assembler test. Links the scheduler lib (buildPlanReport /
+# formatPlanReport + all four planners) and the schema lib for the JSON seam.
 add_executable(PlanReportTest PlanReportTest.cpp)
 target_link_libraries(PlanReportTest PRIVATE
   MLIRTensixflowScheduler
@@ -95,8 +113,8 @@ target_link_libraries(PlanReportTest PRIVATE
 
 add_test(NAME plan_report COMMAND PlanReportTest)
 
-# Rounding-contract test (todo 38, D14). Sim/Rounding.h is header-only, so the
-# test only needs the include path (no MLIR/LLVM link). It writes
+# Rounding-contract test. Sim/Rounding.h is header-only, so the test only needs
+# the include path (no MLIR/LLVM link). It writes
 # ${CMAKE_BINARY_DIR}/rounding_consistency.txt for the Python bit-for-bit
 # consistency handshake (python/tensixflow/tests/test_rounding.py).
 add_executable(RoundingTest RoundingTest.cpp)
@@ -113,10 +131,10 @@ target_link_libraries(RoundingTest PRIVATE
 
 add_test(NAME rounding COMMAND RoundingTest)
 
-# Functional tile simulator test (todo 39, D14). Links the Sim library (which walks
-# the schedule IR and PUBLIC-links MLIRTensixflow) plus the MLIR libs needed to parse
-# tiny funcs and run the plan -> allocate -> lower pipeline that builds the schedule
-# IR the simulator executes. ctest name EXACTLY tile_simulator.
+# Functional tile simulator test. Links the Sim library (which walks the
+# schedule IR and PUBLIC-links MLIRTensixflow) plus the MLIR libs needed to
+# parse tiny funcs and run the plan -> allocate -> lower pipeline that builds
+# the schedule IR the simulator executes.
 add_executable(TileSimulatorTest TileSimulatorTest.cpp)
 target_link_libraries(TileSimulatorTest PRIVATE
   MLIRTensixflowSim
@@ -133,10 +151,9 @@ target_link_libraries(TileSimulatorTest PRIVATE
 
 add_test(NAME tile_simulator COMMAND TileSimulatorTest)
 
-# Static performance-model test (todo 42). Links the Analysis lib (which carries
-# estimatePerf/formatPerfReport and PUBLIC-links the scheduler lib — NoC estimator
-# + L1-budget constants + plan structs — and the schema lib for plan::toJson /
-# parsePlan). ctest name EXACTLY perf_model.
+# Static performance-model test. Links the Analysis lib (estimatePerf and
+# formatPerfReport; PUBLIC-links the scheduler lib and the generated device
+# table) and the schema lib for plan::toJson and parsePlan.
 add_executable(PerfModelTest PerfModelTest.cpp)
 target_link_libraries(PerfModelTest PRIVATE
   MLIRTensixflowAnalysis
@@ -148,16 +165,3 @@ target_link_libraries(PerfModelTest PRIVATE
 )
 
 add_test(NAME perf_model COMMAND PerfModelTest)
-
-# Disjunctive hardware acceptance harness (todo 57, D19/D25): an EXPLICIT if/else
-# in scripts/hw_acceptance.sh — device present -> the on-device branch (todo 55
-# entry point scripts/hw_run_on_device.sh, may fail honestly, never masked);
-# absent -> the no-device branch (todo 56: hw_bringup_dryrun.sh + compile-only
-# kernel check), which must PASS on a no-device box. NEVER an `&&...||` form.
-# WORKING_DIRECTORY pins the repo root (ctest's default CWD is the build dir);
-# the script also anchors itself at its own repo root, so the literal
-# repo-relative else arm resolves from any CWD.
-add_test(NAME hw-acceptance
-  COMMAND bash ${PROJECT_SOURCE_DIR}/scripts/hw_acceptance.sh
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-)

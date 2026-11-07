@@ -1,6 +1,6 @@
 //===- RoundingTest.cpp ------------------------------------------*- C++ -*-===//
 //
-// Unit tests for the TensixFlow bf16/fp32 rounding contract (draft D14, todo 38)
+// Unit tests for the TensixFlow bf16/fp32 rounding contract
 // defined in lib/tensixflow/Sim/Rounding.h. Covers:
 //
 //   * to_bf16 known values (round-trip of representable bf16, rounding of
@@ -8,8 +8,8 @@
 //   * round-to-nearest-EVEN tie rule (a value exactly halfway rounds to even);
 //   * inf / NaN / negative-zero handling;
 //   * to_bf16 matches an independent reference on the fixed 1000-value vector;
-//   * the GOLDEN path holds a fused intermediate in fp32 (NOT bf16) — the
-//     non-vacuity invariant the PCC bar (todo 41) relies on;
+//   * the GOLDEN path holds a fused intermediate in fp32 (NOT bf16), the
+//     non-vacuity invariant the PCC bar relies on;
 //   * writes build/rounding_consistency.txt so the Python test can assert the
 //     C++ and Python to_bf16 agree bit-for-bit on 1000 random fp32 values.
 //
@@ -105,7 +105,7 @@ TEST(RoundingTest, GoldenHoldsFp32NotBf16) {
   EXPECT_EQ(bits(golden::passthrough(x)), xBits);
   // SIMULATOR rounds it -> different bits.
   EXPECT_NE(bits(sim::to_bf16(x)), xBits);
-  // The two paths DIVERGE (non-vacuity, D14): if the golden also rounded to bf16
+  // The two paths DIVERGE (non-vacuity): if the golden also rounded to bf16
   // these would be equal and PCC(sim, golden) would collapse to 1.0.
   EXPECT_NE(bits(golden::passthrough(x)), bits(sim::to_bf16(x)));
 }
@@ -117,8 +117,8 @@ TEST(RoundingTest, ConsistencyInputsLocked) {
 }
 
 // Writes the C++ bf16 bit patterns for the consistency vector so the pytest
-// (python/tensixflow/tests/test_rounding.py) can assert bit-for-bit agreement —
-// the cross-language handshake. Format per line: "<input_u32_hex> <bf16_u16_hex>".
+// (python/tensixflow/tests/test_rounding.py) can assert bit-for-bit agreement.
+// That is the cross-language handshake. Format per line: "<input_u32_hex> <bf16_u16_hex>".
 TEST(RoundingTest, WriteConsistencyFile) {
   std::ofstream out(TENSIXFLOW_ROUNDING_OUT_DIR "/rounding_consistency.txt");
   ASSERT_TRUE(out.good()) << "cannot open consistency output file";

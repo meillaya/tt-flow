@@ -1,53 +1,14 @@
-"""TensixFlow NumPy golden reference (op-semantics) — the FP32-EXACT reference
-the simulator's bf16 tiled path (todo 39) is measured against (draft D14).
+"""TensixFlow NumPy golden reference (op semantics).
 
-THE D14 CONTRACT — the simulator and the golden are DELIBERATELY at different
-precision so the PCC bar (todo 41, >= 0.9875) measures REAL bf16-spatial-vs-exact
-divergence rather than collapsing to ~1.0:
+The golden is the fp32-exact reference the simulator's bf16 tiled path is
+measured against. Every op below computes in float32 and keeps every
+intermediate in float32. The simulator rounds to bf16, so the two paths differ
+on purpose and PCC measures the divergence. The fused helpers therefore hold
+their intermediates in fp32: the rmsnorm output feeding the matmul is never
+bf16-rounded here.
 
-* GOLDEN (this module) = fp32-EXACT: fp32 accumulate, fp32 intermediates, NO bf16
-  rounding of intermediates (round only the final compared output, if at all).
-  Every op below computes in float32 and keeps EVERY intermediate in float32.
-* SIMULATOR (``lib/tensixflow/Sim/TileSimulator.cpp``) = bf16 SPATIAL: rounds CB
-  storage and fused intermediates to bf16 (round-to-nearest-even, todo 38), fp32
-  accumulate within a tile, tiled accumulation order.
-
-The deliberate precision gap is what makes
-``PCC(simulator_bf16_tiled, golden_fp32_exact)`` a meaningful bar: if the golden
-ALSO rounded intermediates to bf16, the two paths would be identical and PCC would
-collapse to ~1.0 (VACUOUS). The fused helpers therefore HOLD their intermediates in
-fp32 — the rmsnorm output feeding the matmul is NEVER bf16-rounded here. That is
-the structural non-vacuity invariant the harness (todo 41) asserts (it shows the
-golden's intermediate is not bf16-representable via ``rounding.to_bf16``).
-
-Op semantics mirror the dialect (``include/tensixflow/TensixflowOps.td``) and the
-simulator's op math — the SAME formulas, minus tiling / circular buffers / bf16:
-
-* ``rmsnorm(x, gamma, eps) = x * rsqrt(mean_k(x^2) + eps) * gamma``  (per-row over
-  the last dim K; fp32 reduce-square-sum, fp32 rsqrt, fp32 scale).
-* ``matmul(a, b) = a @ b``                                            (fp32 matmul;
-  matches numpy ``@`` exactly).
-* ``gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))``                      (exact erf
-  form, matching the simulator's geluTile; libm erf — the same C erf as std::erf).
-* ``silu(x) = x / (1 + exp(-x))``                                     (SiLU/swish;
-  the dialect's gelu op models GELU/SiLU — provided for completeness).
-* ``add(a, b)`` / ``residual(x, r)`` = elementwise fp32 sum.
-
-Fused composition (verified against the dialect):
-
-* ``fused_rmsnorm_matmul(x, gamma, w, eps) = matmul(rmsnorm(x, gamma, eps), w)``
-  (``TensixflowFusedRmsnormMatmulOp``: ``result = matmul(rmsnorm(input, gamma),
-  weight)``; the rmsnorm intermediate is held in fp32, NOT bf16-rounded.)
-* ``fused_mlp(x, gamma, w1, b1, w2, residual, eps)
-      = (gelu(matmul(rmsnorm(x, gamma, eps), w1) + b1) @ w2) + residual``
-  (``TensixflowFusedMlpOp``: ``result = (gelu(matmul(rmsnorm(input, gamma), w1) +
-  b1) @ w2) + residual``; operands ``input, gamma, w1, b1, w2, residual``. ALL five
-  intermediates — rmsnorm out, matmul1 out, bias-add out, gelu out, matmul2 out —
-  are held in fp32, NOT bf16-rounded.)
-
-CPU / numpy only. No GPU, no tiling, no circular buffers (the simulator models
-those). Dependency-free: numpy + stdlib (``math.erf``) — numpy has no vectorized
-erf and the verification env is numpy+pytest only (no scipy).
+Op semantics mirror the dialect and the simulator's op math, without tiling,
+circular buffers, or bf16 rounding.
 """
 
 from __future__ import annotations
@@ -72,8 +33,8 @@ _F32 = np.float32
 
 def _f32(x: object) -> np.ndarray:
     """Boundary parse: coerce to a float32 ndarray. Every golden input enters as
-    fp32 and EVERY intermediate stays fp32 — there is NO bf16 rounding anywhere in
-    this module (that is the simulator's job, todo 39)."""
+    fp32 and every intermediate stays fp32; there is no bf16 rounding in this
+    module (that is the simulator's job)."""
     return np.asarray(x, dtype=_F32)
 
 
@@ -100,7 +61,7 @@ def matmul(a: object, b: object) -> np.ndarray:
 
 
 def _erf(x: np.ndarray) -> np.ndarray:
-    """Elementwise erf -> float32 via libm ``math.erf`` — the SAME C erf the
+    """Elementwise erf -> float32 via libm ``math.erf``, the same C erf the
     simulator's ``std::erf`` calls. numpy exposes no vectorized erf; this keeps the
     golden dependency-free (numpy + stdlib, CPU only)."""
     flat = x.ravel()
@@ -134,8 +95,8 @@ def residual(x: object, r: object) -> np.ndarray:
 
 
 def fused_rmsnorm_matmul(x: object, gamma: object, w: object, eps: float = 1e-6) -> np.ndarray:
-    """``matmul(rmsnorm(x, gamma, eps), w)`` — the dialect's fused_rmsnorm_matmul,
-    with the rmsnorm intermediate HELD IN FP32 (NOT bf16-rounded): the D14
+    """``matmul(rmsnorm(x, gamma, eps), w)``: the dialect's fused_rmsnorm_matmul,
+    with the rmsnorm intermediate HELD IN FP32 (NOT bf16-rounded): the
     non-vacuity invariant. The simulator bf16-rounds this same intermediate."""
     normed = rmsnorm(x, gamma, eps)  # fp32 intermediate (the simulator rounds it to bf16)
     return matmul(normed, w)
@@ -150,7 +111,7 @@ def fused_mlp(
     residual: object,
     eps: float = 1e-6,
 ) -> np.ndarray:
-    """``(gelu(matmul(rmsnorm(x, gamma, eps), w1) + b1) @ w2) + residual`` — the
+    """``(gelu(matmul(rmsnorm(x, gamma, eps), w1) + b1) @ w2) + residual``: the
     dialect's fused_mlp (operands ``input, gamma, w1, b1, w2, residual``). ALL five
     intermediates are HELD IN FP32 (NOT bf16-rounded); the simulator rounds each."""
     normed = rmsnorm(x, gamma, eps)    # fp32 intermediate

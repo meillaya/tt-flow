@@ -1,5 +1,5 @@
-# tensixflow-simulate: the Python<->C++ simulator bridge (todo 41, D14). Wraps the
-# functional tile simulator (lib/tensixflow/Sim, todo 39) end-to-end so the Python
+# tensixflow-simulate: the Python and C++ simulator bridge. Wraps the
+# functional tile simulator (lib/tensixflow/Sim) end-to-end so the Python
 # correctness harness can drive the REAL C++ simulator over a schedule IR built by
 # the full pipeline. Links the Sim library (which PUBLIC-links MLIRTensixflow, so
 # the schedule-op classes resolve) plus the MLIR libs needed to parse the example

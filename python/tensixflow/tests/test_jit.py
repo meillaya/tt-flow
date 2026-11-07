@@ -1,9 +1,9 @@
-"""Pytest for the ``@tensixflow.jit`` scaffold (todo 46, draft D21 thin builder).
+"""Pytest for the ``@tensixflow.jit`` scaffold.
 
 Covers:
   * ``jit`` is exposed at the package top level (``tensixflow.jit``);
   * decorating CAPTURES the function (``.fn`` / ``__wrapped__`` / metadata);
-  * decoration does NOT trace or execute the body (D21: thin builder only);
+  * decoration does NOT trace or execute the body (thin builder only);
   * the decorated kernel stays callable via the eager fallback;
   * decorating a non-callable raises a clear ``TypeError`` (``JitTypeError``).
 """
@@ -61,7 +61,7 @@ def test_decoration_does_not_trace_or_call_the_body():
     # When decorating (and ONLY decorating)
     tensixflow.jit(kernel)
 
-    # Then the body was never run: capture only, no tracing (D21)
+    # Then the body was never run: capture only, no tracing
     assert called == []
 
 

@@ -1,12 +1,12 @@
 //===- bench_mlp_block.cpp - MLP block bench --------------------*- C++ -*-===//
 //
-// TensixFlow benchmark (todo 44, D21): a SIMPLE timing loop for the fused MLP
+// TensixFlow benchmark: a simple timing loop for the fused MLP
 // block (rmsnorm -> matmul(w1) -> add(b1) -> gelu -> matmul(w2) -> add(residual))
 // -- NOT a benchmarking framework (no Google Benchmark, no statistics engine).
 // Two parts:
 //
-//   1. HEADLINE FIGURES -- the static perf model (todo 42). buildPlanReport
-//      (todo 30) assembles the plan for the example shapes
+//   1. HEADLINE FIGURES: the static perf model. buildPlanReport
+//      assembles the plan for the example shapes
 //      (activation [1,2048,4096] @ w1 [4096,12288]); estimatePerf runs the NoC
 //      estimator for BOTH the unfused and fused paths; formatPerfReport prints
 //      the user's report (unfused vs fused DRAM reads/writes, kernel launches,
@@ -17,7 +17,7 @@
 //   2. SIMULATOR TIMING LOOP -- a functional-execution measure. The full
 //      schedule-producing pipeline fuses the reduced chain into a
 //      `tensixflow.fused_mlp` and lowers it to a sched.kernel; runTileSimulator
-//      (todo 39) executes it in a plain std::chrono loop. DOCUMENTED SCOPE: the
+//      executes it in a plain std::chrono loop. Documented scope: the
 //      simulator executes ONLY the compute prefix rmsnorm -> matmul(w1) -> gelu
 //      (the lowering emits no schedule ops for bias(b1)/matmul(w2)/residual --
 //      the documented MLP scope reduction, equivalent to identity trailing
@@ -109,8 +109,16 @@ void runPerfModel() {
   req.bytesPerElem = 2;
 
   const tf::scheduler::PlanReport planReport = tf::scheduler::buildPlanReport(req);
+
+  // The plan records the device it was built for. Resolve that spec so the
+  // projection uses the planned device's clock, bandwidth, and core count.
+  const tf::device::DeviceSpec *deviceSpec =
+      tf::device::lookup(planReport.plan.device.name);
+  if (deviceSpec == nullptr) {
+    deviceSpec = tf::device::defaultDevice();
+  }
   const tf::analysis::PerfReport perf =
-      tf::analysis::estimatePerf(planReport.plan);
+      tf::analysis::estimatePerf(planReport.plan, *deviceSpec);
 
   // All benchmark output goes through llvm::outs() (the same single stream the
   // planning passes print on) so the ordering is deterministic.

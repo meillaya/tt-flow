@@ -1,18 +1,18 @@
 //===- SchedulerModelTest.cpp -----------------------------------*- C++ -*-===//
 //
-// Unit tests for the TensixFlow scheduler data model (todo 25):
-//   1. TileAndTensorBytes — 32x32 bf16 tile = 2048 bytes; tensor element/byte
-//                           math; bytesPerElem sizing.
-//   2. CBIndexValidation  — tt::CBIndex range c_0..c_31; out-of-range rejected.
-//   3. EnumStrings        — Placement / WeightStrategy / PipelineStage strings.
-//   4. JsonRoundTrip      — scheduler model -> plan::Plan -> toJson -> parsePlan
-//                           round-trips field-for-field (reuses the PlanSchema
-//                           serialization seam from todo 24).
+// Unit tests for the TensixFlow scheduler data model:
+//   1. TileAndTensorBytes - 32x32 bf16 tile = 2048 bytes; tensor element and
+//                           byte math; bytesPerElem sizing.
+//   2. CBIndexValidation  - tt::CBIndex range c_0..c_31; out-of-range rejected.
+//   3. EnumStrings        - Placement / WeightStrategy / PipelineStage strings.
+//   4. JsonRoundTrip      - scheduler model -> plan::Plan -> toJson -> parsePlan
+//                           round-trips field-for-field, device block included.
 //
 //===----------------------------------------------------------------------===//
 
 #include "Model.h"
 
+#include "tensixflow/Generated/DeviceSpecs.h"
 #include "tensixflow/PlanSchema.h"
 
 #include "llvm/Support/JSON.h"
@@ -117,6 +117,13 @@ TEST(SchedulerModelTest, JsonRoundTrip) {
   draft.weightStrategy = WeightStrategy::Multicast;
   draft.activationSharding = "row-major";
   draft.grid = mlir::tensixflow::ShardGrid{8, 8};
+  draft.device.name = "n150";
+  draft.device.arch = "wormhole_b0";
+  draft.device.gridX = 8;
+  draft.device.gridY = 8;
+  draft.device.l1UsableBytes = 1499136;
+  draft.device.flopsPerCyclePerCore = 4096;
+  draft.device.dramBandwidthBytesPerSecond = 288000000000;
 
   // Reader/compute/writer CBs at the tt-metal in0/in1/out convention.
   draft.cbSpecs.push_back(toSchemaCBSpec(/*index=*/0, /*depth=*/4, tile,
@@ -132,7 +139,7 @@ TEST(SchedulerModelTest, JsonRoundTrip) {
   EXPECT_EQ(original.layout.weightStrategy, "multicast");
   EXPECT_EQ(original.layout.activationSharding, "row-major");
 
-  // Round-trip through the PlanSchema JSON seam (todo 24).
+  // Round-trip through the PlanSchema JSON seam.
   std::string text = toJson(original);
   std::optional<json::Value> parsed = parseText(text);
   ASSERT_TRUE(parsed.has_value()) << "toPlan/toJson output must be valid JSON";

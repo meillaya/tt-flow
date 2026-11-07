@@ -1,6 +1,6 @@
-"""Pytest for the TensixFlow NumPy golden reference (op-semantics, todo 40, D14).
+"""Pytest for the TensixFlow NumPy golden reference (op semantics).
 
-The golden is the FP32-EXACT reference the simulator's bf16 tiled path (todo 39)
+The golden is the FP32-EXACT reference the simulator's bf16 tiled path
 is measured against: fp32 accumulate, fp32 intermediates, NO bf16 rounding of
 intermediates. Covers:
 
@@ -9,8 +9,8 @@ intermediates. Covers:
   * matmul matches numpy ``@`` (known identity) on a small random case;
   * fused golden == composed unfused golden, bit-for-bit (fused_rmsnorm_matmul AND
     fused_mlp);
-  * a fused intermediate is HELD IN FP32 (NOT bf16) — the structural non-vacuity
-    invariant the PCC harness (todo 41) relies on (via ``rounding.to_bf16``);
+  * a fused intermediate is HELD IN FP32 (NOT bf16), the structural non-vacuity
+    invariant the PCC harness relies on (via ``rounding.to_bf16``);
   * the golden's outputs are float32 (the structural fp32 dtype assertion);
   * eps sensitivity: a wrong eps changes the rmsnorm output.
 
@@ -123,7 +123,7 @@ def test_fused_mlp_equals_composed_unfused_golden():
     assert np.array_equal(fused, composed)
 
 
-# --- fused intermediate held in fp32 (NOT bf16) — D14 non-vacuity ------------
+# --- fused intermediate held in fp32 (NOT bf16), non-vacuity invariant --------
 
 
 def test_fused_rmsnorm_matmul_holds_intermediate_in_fp32_not_bf16():

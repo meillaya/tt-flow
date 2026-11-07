@@ -1,7 +1,7 @@
 add_mlir_dialect(TensixflowOps tensixflow)
 
-# Tile-level schedule IR (todo 31): the tensixflow.sched.* op set that is the
-# codegen<->simulator contract (draft D14). Own tablegen target, folded into the
+# Tile-level schedule IR: the tensixflow.sched.* op set that is the
+# codegen and simulator contract. Own tablegen target, folded into the
 # dialect TU via addOperations<> (see lib/tensixflow/TensixflowDialect.cpp).
 set(LLVM_TARGET_DEFINITIONS TensixflowSchedule.td)
 mlir_tablegen(TensixflowSchedule.h.inc -gen-op-decls)

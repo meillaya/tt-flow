@@ -3,7 +3,6 @@
 config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
 config.tensixflow_obj_root = "@TENSIXFLOW_BINARY_DIR@"
 config.tensixflow_tools_dir = "@TENSIXFLOW_TOOLS_DIR@"
-config.tensixflow_cxx = "@TENSIXFLOW_CXX@"
 config.llvm_shlib_ext = "@SHLIBEXT@"
 
 import lit.llvm

@@ -236,8 +236,8 @@ void TensixflowDialect::initialize() {
 #include "tensixflow/TensixflowOps.cpp.inc"
       >();
 #undef GET_OP_LIST
-  // Tile-level schedule IR ops (todo 31): the tensixflow.sched.* set, the
-  // codegen<->simulator contract (draft D14). Same dialect, registered alongside
+  // Tile-level schedule IR ops: the tensixflow.sched.* set, the
+  // codegen and simulator contract. Same dialect, registered alongside
   // the tensor ops; their GET_OP_CLASSES definitions live in
   // TensixflowScheduleOps.cpp (the single TU with the complete op storage).
   addOperations<

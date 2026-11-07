@@ -1,30 +1,12 @@
-"""TensixFlow DSL builders — explicit construction of ``tensixflow`` MLIR TEXT
-(Stretch A, todo 47; draft D21 thin builder).
+"""TensixFlow DSL builders: explicit construction of ``tensixflow`` MLIR text.
 
-D21 GUARDRAIL: this is a THIN TEXT BUILDER, NOT a tracing JIT and NOT an AST
-compiler. There is no ``ast`` / ``inspect.getsource`` / function tracing anywhere:
-the user makes EXPLICIT builder calls (``b.rmsnorm(x, gamma)``, ``b.matmul(a, b)``,
-...) and each call appends the corresponding ``tensixflow.*`` op TEXT to a function
-body, threading SSA names + tensor types. The ``@tensixflow.jit`` decorator (todo 46)
-captures a kernel; the lowering driver that invokes the ``tensixflow-opt`` pipeline
-on the built text lands in todo 48.
+The builders emit op text directly. A user writes explicit calls such as
+``b.rmsnorm(x, gamma)``, and each call appends the matching ``tensixflow.*`` op
+to the function body. There is no AST import, no function tracing, and no MLIR
+Python binding: the built ``tensixflow-opt`` validates the text.
 
-The emitted op syntax matches the dialect EXACTLY (read off
-``include/tensixflow/TensixflowOps.td`` + ``examples/rmsnorm_matmul.mlir`` +
-``test/Tensixflow/{ops,matmul,rmsnorm}.mlir``):
-
-* ``tensixflow.func @name(%x: tensor<...>, ...) -> tensor<...> { ...body...
-  tensixflow.return %r : tensor<...> }``
-* ``%N = tensixflow.rmsnorm %x, %g : tensor<...>, tensor<...> -> tensor<...>``
-  (input type, gamma type, result type; epsilon is a defaulted attr, elided)
-* ``%N = tensixflow.matmul %a, %b : tensor<...> x tensor<...> -> tensor<...>``
-  (lhs type ``x`` rhs type, then the result type)
-* ``%N = tensixflow.gelu %x : tensor<...>``            (single shared type)
-* ``%N = tensixflow.add %a, %b : tensor<...>``         (single shared type; the
-  residual connection is spelled ``tensixflow.add`` too — there is no residual op)
-
-No MLIR Python bindings are required: the IR is emitted as plain text and is
-validated by piping it through the built ``build/bin/tensixflow-opt`` (todo 8).
+The emitted syntax matches ``include/tensixflow/TensixflowOps.td`` and the
+examples under ``examples/``.
 """
 
 from __future__ import annotations
@@ -122,7 +104,7 @@ class FuncBuilder:
         return self._name
 
     def __getattr__(self, name: str) -> NoReturn:
-        """Clear "no builder" error for an unsupported op (todo 48 failure path).
+        """Clear "no builder" error for an unsupported op (the failure path).
 
         Called ONLY when normal lookup fails (real builders + attrs are found the
         usual way), so a jitted kernel that calls a non-existent builder method
@@ -164,7 +146,7 @@ class FuncBuilder:
     # --- op builders (exact dialect syntax) --------------------------------
 
     def rmsnorm(self, x: Value, gamma: Value) -> Value:
-        """``tensixflow.rmsnorm`` — the result has the SAME shape as ``x`` (gamma is
+        """``tensixflow.rmsnorm``: the result has the SAME shape as ``x`` (gamma is
         the 1-D scale over the last dim; epsilon defaults to 1e-6 and is elided)."""
         result = Value(self._fresh(), x.type)
         self._emit(
@@ -174,7 +156,7 @@ class FuncBuilder:
         return result
 
     def matmul(self, a: Value, b: Value) -> Value:
-        """``tensixflow.matmul`` — for ``a: [..., M, K]`` and ``b: [K, N]`` the result
+        """``tensixflow.matmul``: for ``a: [..., M, K]`` and ``b: [K, N]`` the result
         is ``[..., M, N]`` (batch dims from ``a``). The contracting-dim check is the
         dialect verifier's job: a K mismatch is rejected at parse/verify time, so the
         builder does NOT pre-validate it (it just threads the result shape)."""
@@ -187,20 +169,20 @@ class FuncBuilder:
         return result
 
     def gelu(self, x: Value) -> Value:
-        """``tensixflow.gelu`` — elementwise activation; result shape == ``x`` shape."""
+        """``tensixflow.gelu``: elementwise activation; result shape == ``x`` shape."""
         result = Value(self._fresh(), x.type)
         self._emit(f"  {result.ssa} = tensixflow.gelu {x.ssa} : {x.type}")
         return result
 
     def add(self, a: Value, b: Value) -> Value:
-        """``tensixflow.add`` — elementwise sum (SameOperandsAndResultType: one shared
+        """``tensixflow.add``: elementwise sum (SameOperandsAndResultType: one shared
         type for both operands + the result); result shape == ``a`` shape."""
         result = Value(self._fresh(), a.type)
         self._emit(f"  {result.ssa} = tensixflow.add {a.ssa}, {b.ssa} : {a.type}")
         return result
 
     def residual(self, a: Value, b: Value) -> Value:
-        """Residual connection — semantically an elementwise add, so it emits
+        """Residual connection: semantically an elementwise add, so it emits
         ``tensixflow.add`` (there is no ``tensixflow.residual`` op; ``examples/
         mlp_block.mlir`` spells the trailing ``+ residual`` as ``tensixflow.add``)."""
         result = Value(self._fresh(), a.type)

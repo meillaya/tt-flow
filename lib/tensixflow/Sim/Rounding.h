@@ -1,13 +1,13 @@
 //===- Sim/Rounding.h -------------------------------------------*- C++ -*-===//
 //
-// TensixFlow rounding contract (draft D14) — shared by the functional tile
-// simulator (todo 39) AND the NumPy golden (todo 40), with a Python twin in
+// TensixFlow rounding contract shared by the functional tile
+// simulator and the NumPy golden, with a Python twin in
 // python/tensixflow/rounding.py that is BIT-FOR-BIT identical (proven by the
 // C++/Python consistency test in test/unit/RoundingTest.cpp +
 // python/tensixflow/tests/test_rounding.py).
 //
-// THE D14 CONTRACT — the simulator and the golden are DELIBERATELY at different
-// precision so the PCC bar (todo 41, >= 0.9875) measures REAL bf16-spatial-vs-
+// THE ROUNDING CONTRACT: the simulator and the golden are deliberately at
+// different precision so the PCC bar of 0.9875 measures the real bf16-spatial versus
 // exact divergence rather than collapsing to ~1.0:
 //
 //   * SIMULATOR path (namespace `sim`) = bf16 SPATIAL hardware model:
@@ -17,18 +17,18 @@
 //       - fused SRAM / circular-buffer INTERMEDIATES between stages are stored
 //         as bf16 (i.e. rounded between fused stages).
 //     The simulator must NOT silently keep fp32 storage for fused intermediates
-//     — that would under-model the bf16 spatial cost.
+//     which would under-model the bf16 spatial cost.
 //
 //   * GOLDEN path (namespace `golden`) = fp32-EXACT reference:
 //       - fp32 accumulate, fp32 intermediates, NO bf16 rounding of intermediates
 //         (golden::passthrough is the identity on fp32). Round only the final
 //         compared output, if at all.
-//     The golden must NOT round intermediates to bf16 — doing so makes the two
+//     The golden must NOT round intermediates to bf16. Doing so makes the two
 //     paths identical and the PCC bar VACUOUS (PCC -> 1.0).
 //
 // PCC(simulator_bf16_tiled, golden_fp32_exact) therefore measures the real
-// cost of fusion + tiled bf16 execution (arXiv:2606.09879 context: hardware-bf16
-// vs fp32 reference; the 0.9875 floor comes from there).
+// cost of fused tiled execution against an fp32 reference. The 0.9875 floor
+// is the project's fixed correctness bar.
 //
 // bf16 = sign(1) + exponent(8) + mantissa(7): the HIGH 16 bits of an IEEE-754
 // fp32, with the LOW 16 bits rounded. to_bf16 below is round-to-nearest-EVEN
@@ -78,7 +78,7 @@ inline bool isNaNBits(uint32_t b) {
 /// Bit manipulation: add the rounding bias `0x7FFF + lsb` (lsb = the bf16
 /// mantissa LSB) so exact ties round to EVEN, then mask off the low 16 bits.
 /// NaN inputs are canonicalized to a sign-preserving quiet NaN (the unguarded
-/// bias-add can overflow a NaN payload into the sign bit and produce a zero —
+/// bias-add can overflow a NaN payload into the sign bit and produce a zero;
 /// the guard makes "NaN stays NaN" hold for every payload). inf and negative
 /// zero pass through unchanged.
 inline float to_bf16(float x) {
@@ -96,7 +96,7 @@ inline uint16_t to_bf16_bits(float x) {
 }
 
 //===----------------------------------------------------------------------===//
-// Independent reference (textbook conditional rounding) — used ONLY by the unit
+// Independent reference (textbook conditional rounding), used ONLY by the unit
 // test to cross-check to_bf16. Deliberately a DIFFERENT algorithm (explicit
 // round-up decision) so it is a genuine oracle, not a restatement of the bias
 // trick. The NaN canonicalization is the shared contract point.
@@ -110,7 +110,7 @@ inline float to_bf16_reference(float x) {
   uint32_t low = b & 0x0000FFFFu; // discarded low 16 bits
   uint32_t lsb = (b >> 16) & 1u;  // retained bf16 mantissa LSB
   // Round up when the discarded part exceeds half, OR is exactly half and the
-  // retained value is odd (increment makes it even) — round-to-nearest-even.
+  // retained value is odd (increment makes it even), round-to-nearest-even.
   bool roundUp = (low > 0x8000u) || (low == 0x8000u && lsb == 1u);
   if (roundUp)
     top += 0x00010000u; // carries mantissa -> exponent naturally
@@ -121,7 +121,7 @@ inline float to_bf16_reference(float x) {
 // Consistency-test input generator (shared with Python). A fixed-seed 32-bit LCG
 // (Numerical Recipes constants) whose uint32 sequence is bit-identical in C++
 // (unsigned wrap) and Python (& 0xFFFFFFFF). Each uint32 is reinterpreted as an
-// fp32, giving a spread of normals, subnormals, inf and NaN — so the edge-case
+// fp32, giving a spread of normals, subnormals, inf and NaN, so the edge-case
 // handling is exercised identically across both languages.
 //===----------------------------------------------------------------------===//
 
@@ -146,11 +146,11 @@ consistencyInputs(std::size_t n = kConsistencyCount,
 namespace mlir::tensixflow::golden {
 
 //===----------------------------------------------------------------------===//
-// GOLDEN fp32-exact path (draft D14). The golden reference accumulates and
-// stores intermediates in fp32 with NO bf16 rounding — passthrough is the
-// identity on fp32. The simulator (todo 39) calls sim::to_bf16; the golden
-// (todo 40) calls golden::passthrough. Keeping these two paths distinct is what
-// makes the PCC bar (todo 41) non-vacuous.
+// GOLDEN fp32-exact path. The golden reference accumulates and
+// stores intermediates in fp32 with NO bf16 rounding; passthrough is the
+// identity on fp32. The simulator calls sim::to_bf16; the golden calls
+// golden::passthrough. Keeping these two paths distinct is what
+// makes the PCC bar non-vacuous.
 //===----------------------------------------------------------------------===//
 
 inline float passthrough(float x) { return x; }

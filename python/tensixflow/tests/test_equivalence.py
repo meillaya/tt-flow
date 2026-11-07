@@ -1,9 +1,9 @@
-"""Pytest for DSL-vs-handwritten canonicalized-IR equivalence (todo 49, draft D21).
+"""Pytest for DSL and handwritten canonicalized IR equivalence.
 
-The Stretch-A acceptance (D21): the DSL builders (todo 47) produce IR that is
+The DSL acceptance: the builders produce IR that is
 STRUCTURALLY IDENTICAL to the handwritten ``examples/rmsnorm_matmul.mlir``, after
-BOTH are canonicalized by the BUILT ``tensixflow-opt`` (the todo-16
-``--tensixflow-canonicalize`` pass) and SSA value names are NORMALIZED: every
+BOTH are canonicalized by the built ``tensixflow-opt``
+(``--tensixflow-canonicalize``) and SSA value names are NORMALIZED: every
 ``%<name>`` is renamed to a canonical ``%v0``, ``%v1``, ... sequence in order of
 FIRST APPEARANCE, and the func symbol is replaced by ``@func``. Raw text is NEVER
 compared: the DSL and the example choose different names (``@fused_rmsnorm_matmul``
@@ -55,7 +55,7 @@ _FUNC_SYMBOL = re.compile(r"@[A-Za-z0-9_]+")
 
 
 def _canonicalize(ir_text: str) -> str:
-    """Run the BUILT ``tensixflow-opt --tensixflow-canonicalize`` (todo 16) over IR.
+    """Run the built ``tensixflow-opt --tensixflow-canonicalize`` over IR.
 
     Missing binary raises FileNotFoundError LOUDLY (the lowering.py convention,
     never a silent skip); a nonzero exit raises RuntimeError with both streams.
@@ -101,12 +101,12 @@ def _normalize(ir_text: str) -> str:
 
 
 def _normalized_canonical(ir_text: str) -> str:
-    """Canonicalize (todo 16) then normalize SSA/symbol names: the compare key."""
+    """Canonicalize then normalize SSA and symbol names: the compare key."""
     return _normalize(_canonicalize(ir_text))
 
 
 def test_dsl_build_matches_handwritten_example_after_canonicalization():
-    # Given the DSL-built fused_rmsnorm_matmul (todo 47 builders, the example's
+    # Given the DSL-built fused_rmsnorm_matmul (the builders and the example's
     # shapes) and the handwritten example (the equivalence target)
     dsl_ir = build_func("fused_rmsnorm_matmul", _EXAMPLE_ARGS, _fused_body)
     handwritten_ir = _HANDWRITTEN_EXAMPLE.read_text()
@@ -125,7 +125,7 @@ def test_raw_canonical_texts_differ_so_name_normalization_is_required():
     dsl_raw = _canonicalize(dsl_ir)
     handwritten_raw = _canonicalize(handwritten_ir)
     # Then the raw texts DIFFER (the func symbols @fused_rmsnorm_matmul vs
-    # @rmsnorm_matmul) — a raw-text compare would be a false alarm, which is why
+    # @rmsnorm_matmul); a raw-text compare would be a false alarm, which is why
     # the equivalence gate normalizes names before comparing
     assert dsl_raw != handwritten_raw
     assert "@fused_rmsnorm_matmul" in dsl_raw
@@ -149,7 +149,7 @@ def test_normalization_ignores_names_but_not_structure():
     # Then they normalize to the SAME string (naming is ignored)
     assert _normalize(gelu_a) == _normalize(gelu_b)
     # But a STRUCTURAL change (a different op with a different operand arity)
-    # normalizes DIFFERENTLY — the compare is structure-sensitive, not vacuous
+    # normalizes DIFFERENTLY; the compare is structure-sensitive, not vacuous
     add_ir = (
         "tensixflow.func @three(%a: tensor<2x2xbf16>, %q: tensor<2x2xbf16>) -> tensor<2x2xbf16> {\n"
         "  %r = tensixflow.add %a, %q : tensor<2x2xbf16>\n"
@@ -169,6 +169,6 @@ def test_deliberately_different_build_breaks_equivalence():
     handwritten_norm = _normalized_canonical(_HANDWRITTEN_EXAMPLE.read_text())
     # When canonicalized + normalized the exact same way
     different_norm = _normalized_canonical(different_ir)
-    # Then it does NOT match — the gate reads real structure (QA failure scenario)
+    # Then it does NOT match, so the gate reads real structure (QA failure scenario)
     assert different_norm != handwritten_norm
     assert "tensixflow.gelu" in different_norm

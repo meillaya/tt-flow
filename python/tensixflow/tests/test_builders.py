@@ -1,16 +1,16 @@
-"""Pytest for the TensixFlow DSL builders (todo 47, draft D21 thin builder).
+"""Pytest for the TensixFlow DSL builders.
 
 The builders construct ``tensixflow`` MLIR TEXT via explicit calls (no AST/tracing).
 These tests assert:
 
-* HAPPY — a built ``fused_rmsnorm_matmul`` (rmsnorm -> matmul) emits text containing
+* HAPPY: a built ``fused_rmsnorm_matmul`` (rmsnorm -> matmul) emits text containing
   ``tensixflow.rmsnorm`` + ``tensixflow.matmul``, and that text PARSES (round-trips,
   exit 0) under the built ``build/bin/tensixflow-opt``; gelu/add/residual parse too.
-* FAILURE — a matmul built with an incompatible contracting dim is rejected at
+* FAILURE: a matmul built with an incompatible contracting dim is rejected at
   parse/verify time (``tensixflow-opt`` exits non-zero with the verifier diagnostic).
 
-The parse check drives the REAL C++ tool (todo 8) via subprocess — the same bridge
-pattern as the correctness harness — NOT a Python re-parser.
+The parse check drives the built C++ tool via subprocess, the same bridge pattern
+as the correctness harness. It is not a Python re-parser.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def _fused_rmsnorm_matmul_ir() -> str:
     )
 
 
-# --- package surface + D21 guard ---------------------------------------------
+# --- package surface and thin builder guard ----------------------------------
 
 
 def test_builders_exposed_at_package_top_level():
@@ -95,7 +95,7 @@ def test_d21_builders_do_not_parse_ast_or_trace():
     import tensixflow.builders as builders_mod
 
     # Then it is a THIN TEXT builder: it imports NEITHER `ast` NOR `inspect` (no AST
-    # parsing, no source inspection / tracing — D21). This is a structural fact about
+    # parsing, no source inspection or tracing). This is a structural fact about
     # the module's imports (an `import ast` would bind a `ast` attribute), not prose.
     assert not hasattr(builders_mod, "ast")
     assert not hasattr(builders_mod, "inspect")
@@ -177,7 +177,7 @@ def test_residual_builder_emits_add_op():
     out = b.residual(a, r)
     ir = b.render(out)
     # Then it emits tensixflow.add (there is no tensixflow.residual op; the dialect
-    # spells the residual '+' as add — see examples/mlp_block.mlir)
+    # spells the residual '+' as add; see examples/mlp_block.mlir)
     assert "tensixflow.add %a, %r : tensor<1x2048x4096xbf16>" in ir
     assert "tensixflow.residual" not in ir
 
@@ -262,7 +262,7 @@ def test_matmul_incompatible_shapes_rejected_by_verifier():
     # When parsing it under tensixflow-opt
     proc = _roundtrip(ir)
     # Then the dialect verifier rejects it (non-zero exit + the contracting-dim
-    # diagnostic) — the builder threads shapes but does NOT pre-validate them
+    # diagnostic). The builder threads shapes but does NOT pre-validate them
     assert proc.returncode != 0
     assert "mismatched contracting dimensions" in proc.stderr
     assert "lhs K = 4096 but rhs K = 2048" in proc.stderr

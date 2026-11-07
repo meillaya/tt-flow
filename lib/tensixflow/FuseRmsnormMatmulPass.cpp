@@ -6,16 +6,15 @@
 //===----------------------------------------------------------------------===//
 //
 // The --tensixflow-fuse-rmsnorm-matmul pass. Fuses an adjacent
-// `rmsnorm -> matmul` pair — where the rmsnorm result is the matmul's LHS and
-// has exactly one use — into a single `tensixflow.fused_rmsnorm_matmul`,
+// `rmsnorm -> matmul` pair, where the rmsnorm result is the matmul's LHS and
+// has exactly one use, into a single `tensixflow.fused_rmsnorm_matmul`,
 // eliminating the DRAM round-trip of the normalized intermediate. The rmsnorm
 // epsilon is preserved on the fused op. A multi-use rmsnorm (result consumed
 // by anything besides the single matmul) is deliberately NOT fused; the MLP
-// chain collapse to `fused_mlp` is a later todo (Wave 4, todo 21).
+// chain collapse to `fused_mlp` runs as a second, higher-benefit pattern.
 //
-// This is the real body for the FuseRmsnormMatmulPass stub that previously
-// lived in TensixflowPasses.cpp (that stub is removed so there is exactly one
-// definition of the pass and its createXxx()).
+// The pass registration lives with the other six in TensixflowPasses.cpp;
+// this file owns the fusion patterns and the pass definition.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,7 +30,7 @@ namespace tensixflow {
 
 // Emit impl::FuseRmsnormMatmulPassBase<DerivedT> (in mlir::tensixflow::impl)
 // and the public createFuseRmsnormMatmulPass() definition for this one pass
-// only — the other passes keep their GEN_PASS_DEF_* in TensixflowPasses.cpp
+// only. The other passes keep their GEN_PASS_DEF_* in TensixflowPasses.cpp
 // (InferTileLayoutPass's lives in InferTileLayoutPass.cpp), so no createXxx()
 // is defined twice.
 #define GEN_PASS_DEF_FUSERMSNORMMATMULPASS
@@ -100,7 +99,7 @@ struct FuseRmsnormMatmulPattern : OpRewritePattern<TensixflowRmsnormOp> {
                    rewriter.getI64IntegerAttr(eliminatedBytes));
 
     // The rmsnorm result no longer has any use (the matmul was its only one),
-    // so the rmsnorm is dead — drop it.
+    // so the rmsnorm is dead. Drop it.
     rewriter.eraseOp(rmsnorm);
     return success();
   }

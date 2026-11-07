@@ -7,10 +7,10 @@
 //
 // `tensixflow-translate` driver modeled on llvm-project's
 // mlir/tools/mlir-translate. Registers a single translation,
-// `--tensixflow-to-json`, that serializes a tensixflow module to a
-// simple-but-valid JSON document. This is a SKELETON: it emits a meaningful
-// structure (functions / arguments / ops) but deliberately does NOT define the
-// full plan/perf/viz schema — that lands in todo 24.
+// `--tensixflow-to-json`, that serializes a tensixflow module to the plan JSON
+// contract in schema/plan.schema.json. A planned module serializes the full
+// plan, including the required device block; an unplanned module falls back to
+// the function/argument/op skeleton.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,9 +27,12 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+#include "tensixflow/Generated/DeviceSpecs.h"
 #include "tensixflow/TensixflowAttrs.h"
 #include "tensixflow/TensixflowDialect.h"
 #include "tensixflow/TensixflowOps.h"
+
+#include "DeviceSelection.h"
 
 using namespace mlir;
 
@@ -61,17 +64,31 @@ std::string elemDtype(Type elem) {
 }
 
 /// Serialize a planned module (one carrying a #tensixflow.schedule attribute) to
-/// the plan JSON. The document carries the user-facing report fields at the top
-/// level (graph_id, activation_sharding, weight_strategy, intermediate_storage,
-/// fusion, estimated_dram_reads_saved, estimated_intermediate_writes_saved) plus
-/// the schema/plan.schema.json nested objects (tensors, layout, shard_grid,
-/// cb_specs, noc, perf, viz). Field names mirror PlanSchema.cpp's serializer.
-/// perf/viz are placeholders the perf model (todo 42) and visualizer (todo 43)
-/// fill later.
+/// the plan JSON. The document carries the report fields at the top level
+/// (graph_id, activation_sharding, weight_strategy, intermediate_storage,
+/// fusion, estimated_dram_reads_saved, estimated_intermediate_writes_saved)
+/// plus the schema/plan.schema.json nested objects (device, tensors, layout,
+/// shard_grid, cb_specs, noc, perf, viz). Field names mirror PlanSchema.cpp.
+/// The perf and viz sections are placeholders that the perf model and the
+/// visualizer fill later.
 LogicalResult planToJson(Operation *op,
                          mlir::tensixflow::TensixflowScheduleAttr schedule,
                          raw_ostream &os) {
   namespace json = llvm::json;
+
+  // Device: the module attribute stamped by the planning passes, then the
+  // driver selection, then the generated default. The plan schema requires the
+  // block, so an unknown stamped name falls back instead of emitting a plan the
+  // report tool must reject.
+  const mlir::tensixflow::device::DeviceSpec *deviceSpec =
+      mlir::tensixflow::device::defaultDevice();
+  if (auto deviceAttr =
+          op->getAttrOfType<StringAttr>(mlir::tensixflow::device::kDeviceAttrName)) {
+    if (const auto *looked =
+            mlir::tensixflow::device::lookup(deviceAttr.getValue())) {
+      deviceSpec = looked;
+    }
+  }
 
   std::string graphId = "graph";
   op->walk([&](mlir::tensixflow::TensixflowFuncOp func) {
@@ -82,8 +99,19 @@ LogicalResult planToJson(Operation *op,
   StringRef activationSharding = schedule.getActivationSharding().getValue();
   StringRef weightStrategy = schedule.getWeightStrategy().getValue();
 
+  json::Object device;
+  device["name"] = deviceSpec->name;
+  device["arch"] = deviceSpec->arch;
+  device["grid_x"] = deviceSpec->computeGrid.gridX;
+  device["grid_y"] = deviceSpec->computeGrid.gridY;
+  device["l1_usable_bytes"] = deviceSpec->l1UsableBytes;
+  device["flops_per_cycle_per_core"] = deviceSpec->flopsPerCyclePerCore;
+  device["dram_bandwidth_bytes_per_second"] =
+      deviceSpec->dramBandwidthBytesPerSecond;
+
   json::Object root;
   root["graph_id"] = graphId;
+  root["device"] = json::Value(std::move(device));
   root["activation_sharding"] = activationSharding.str();
   root["weight_strategy"] = weightStrategy.str();
   root["intermediate_storage"] =
@@ -145,10 +173,13 @@ LogicalResult planToJson(Operation *op,
   noc["multicast_bytes"] = schedule.getMulticastBytes();
   root["noc"] = json::Value(std::move(noc));
 
+  // Placeholder perf block. The translate tool reports the plan it was given;
+  // tensixflow-report recomputes this section from the device data. The neutral
+  // classification is valid on its own so a raw plan JSON stays schema-valid.
   json::Object perf;
   perf["est_cycles"] = static_cast<int64_t>(0);
   perf["compute_util"] = 0.0;
-  perf["bottleneck"] = "memory";
+  perf["bottleneck"] = "balanced";
   perf["suggestions"] = json::Value(json::Array{});
   root["perf"] = json::Value(std::move(perf));
 
@@ -164,9 +195,9 @@ LogicalResult planToJson(Operation *op,
   return success();
 }
 
-/// Serialize a tensixflow module to a JSON skeleton.
+/// Serialize a tensixflow module that has no plan attribute to a JSON skeleton.
 ///
-/// Shape (skeleton, NOT the full todo-24 schema):
+/// Shape (skeleton, not the full plan schema):
 ///   {
 ///     "dialect": "tensixflow",
 ///     "functions": [

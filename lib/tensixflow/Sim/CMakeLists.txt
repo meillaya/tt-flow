@@ -1,6 +1,6 @@
-# Functional tile simulator library (todo 39, draft D14). Own subdirectory because
+# Functional tile simulator library. Own subdirectory because
 # LLVM enforces one build target per directory (the same rule as Schema/ +
-# Scheduler/). Rounding.h (todo 38) is header-only and lives alongside; this target
+# Scheduler/). Rounding.h is header-only and lives alongside; this target
 # lists the single .cpp so the one-target/dir rule holds. A PLAIN add_library (NOT
 # add_mlir_library) keeps it free of MLIR build machinery / tablegen.
 #

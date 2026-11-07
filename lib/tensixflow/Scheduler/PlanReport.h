@@ -1,13 +1,11 @@
 //===- PlanReport.h ---------------------------------------------*- C++ -*-===//
 //
-// TensixFlow plan-report assembler (todo 30): the single seam that runs the four
-// planners (grid / weight / CB / NoC) over a graph's operand shapes and packages
-// their decisions into (a) the schema Plan consumed by tensixflow-translate and
-// (b) the human-readable "Chosen layout: ..." report text. Pure data + math over
-// the scheduler model — NO MLIR dependency — so the planning passes and the unit
-// test share one implementation. The planners and the plan:: structs are reused
-// from GridPlanner/WeightPlanner/CBAllocator/NoCEstimator and PlanSchema.h; this
-// file only composes them.
+// TensixFlow plan-report assembler: the single seam that runs the four planners
+// (grid, weight, CB, NoC) over a graph's operand shapes on a chosen device and
+// packages their decisions into (a) the schema Plan consumed by
+// tensixflow-translate and (b) the human-readable "Chosen layout:" report text.
+// Pure data and math over the scheduler model with no MLIR dependency, so the
+// planning passes and the unit tests share one implementation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +18,8 @@
 #include "NoCEstimator.h"
 #include "WeightPlanner.h"
 
+#include "tensixflow/Generated/DeviceSpecs.h"
+
 #include <string>
 
 namespace mlir {
@@ -27,12 +27,13 @@ namespace tensixflow {
 namespace scheduler {
 
 /// The four planner decisions for one graph plus the assembled schema Plan. The
-/// planning passes attach this to the IR (as a schedule attribute) and print it.
+/// planning passes attach this to the IR as a schedule attribute and print it.
 struct PlanReport {
   std::string graphId;
-  std::string fusion;            // "fused_rmsnorm_matmul" / "fused_mlp" / "none"
+  std::string fusion;
   bool fused = false;
-  std::string intermediateStorage; // "L1" when fused, else "DRAM"
+  std::string intermediateStorage;
+  const device::DeviceSpec *device = nullptr;
   GridPlan grid;
   WeightPlan weight;
   CBAllocation cbs;
@@ -40,8 +41,10 @@ struct PlanReport {
   plan::Plan plan;
 };
 
-/// The plan inputs the passes derive from the IR: the graph id, the activation +
-/// weight operand shapes, the fusion decision, and the element byte width.
+/// The plan inputs the passes derive from the IR: the graph id, the activation
+/// and weight operand shapes, the fusion decision, the element byte width, and
+/// the selected device. A null device means the generated default device; the
+/// planner resolves the pointer once so every decision uses the same spec.
 struct PlanRequest {
   std::string graphId;
   TensorShape activation;
@@ -49,17 +52,18 @@ struct PlanRequest {
   std::string fusion;
   bool fused = false;
   int bytesPerElem = 2;
+  const device::DeviceSpec *device = nullptr;
 };
 
-/// Run the grid/weight/CB/NoC planners over the operand shapes on the modeled
-/// 8x8 grid and assemble the full report (planner decisions + schema Plan). The
-/// Plan's noc field carries the traffic estimate; the savings breakdown lives on
-/// `noc` (savedDramReadBytes etc.) for the report.
-PlanReport buildPlanReport(const PlanRequest &req);
+/// Run the grid/weight/CB/NoC planners over the operand shapes on the selected
+/// device's compute grid and assemble the full report (planner decisions plus
+/// schema Plan). The Plan's device block records the selected spec; the noc
+/// field carries the traffic estimate and the savings breakdown lives on `noc`.
+PlanReport buildPlanReport(const PlanRequest &request);
 
-/// The human-readable "Chosen layout: ..." report text (the user-spec format:
-/// activation_sharding, weight_strategy, intermediate_storage, fusion,
-/// estimated_DRAM_reads_saved, estimated_intermediate_writes_saved).
+/// The human-readable "Chosen layout: ..." report text (activation_sharding,
+/// weight_strategy, intermediate_storage, fusion, device, and the estimated
+/// DRAM and intermediate-write savings). Every figure is a static estimate.
 std::string formatPlanReport(const PlanReport &report);
 
 } // namespace scheduler

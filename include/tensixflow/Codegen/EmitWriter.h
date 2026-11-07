@@ -5,25 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The writer.cpp emitter (Wave 6, todo 35). Given the tile-level schedule IR
-// (a `tensixflow.sched.kernel`) and the module-level #tensixflow.schedule plan,
-// emit a complete, self-consistent writer.cpp translation unit: the NCRISC
-// data-movement kernel that drains result tiles from the output circular buffer
-// to their destination over the NoC, mirroring tt-metal's
-// writer_single_core_mm.cpp kernel_main.
+// The writer.cpp emitter. Emits the data-movement kernel that drains the output
+// circular buffer to DRAM for the pinned tt-metal release: one TensorAccessor
+// for the output buffer and the tile loop that waits on the output circular
+// buffer, writes each tile with noc_async_write_page, and pops it. The emitted
+// kernel is derived from the pinned release's
+// matmul_single_core/kernels/dataflow/writer_single_core_mm.cpp.
 //
-// The emitted kernel_main reads its runtime/compile-time args (get_arg_val /
-// get_compile_time_arg_val) and runs a tile loop doing
-//   cb_wait_front -> get_read_ptr -> noc_async_write ->
-//   noc_async_write_barrier -> cb_pop_front
-// for the output CB. The CB index comes from the schedule allocation (out),
-// never hardcoded. This is DATA MOVEMENT ONLY: no compute math (matmul_tiles /
-// rmsnorm / gelu) -- that is compute.cpp (todo 36).
-//
-// The emitted text compiles `-fsyntax-only` against the signature-only stub
-// headers in kernels/handwritten_baselines/tt_metal_stubs/ (todo 33); the
-// hand-written matmul_single_core_baseline.cpp dataflow side is the
-// proof-of-what-compiles this emitter mirrors.
+// The kernel compiles with tt-metal's JIT compiler at run time, so it is checked
+// by actually building and running the emitted project against the pinned
+// release, not by a syntax-only stub pass.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,11 +31,8 @@ namespace tensixflow {
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
 
-/// Emit a complete writer.cpp translation unit (NCRISC data-movement kernel) for
-/// the given schedule-IR kernel + plan, writing it to `os`. The output is a
-/// standalone TU: it includes "dataflow_api.h", opens the dataflow namespace,
-/// and references only symbols the todo-33 stub headers declare, so it compiles
-/// `-fsyntax-only` against them. Emits no compute math.
+/// Emit the complete writer.cpp translation unit for the given schedule-IR
+/// kernel and plan. The caller has validated the inputs first.
 void emitWriter(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
                 llvm::raw_ostream &os);
 

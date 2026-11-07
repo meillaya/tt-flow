@@ -76,7 +76,7 @@ def Tensixflow_TileLayoutAttr : AttrDef<Tensixflow_Dialect, "TensixflowTileLayou
 //
 //   #tensixflow.schedule<grid 8x8, act "row-major", weight "multicast",
 //     storage "L1", fusion "fused_rmsnorm_matmul",
-//     cbs [0:160:2048, 1:160:2048, 16:160:2048],
+//     cbs [0:2:2048, 1:2:2048, 16:2:2048],
 //     dram_read 117440512, dram_write 50331648, l1 16777216,
 //     multicast 100663296, saved_read 16777216, saved_write 16777216,
 //     saved_intermediate 16777216>

@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The --tensixflow-lower-to-ttkernel pass: the Wave-6 codegen heart. It reads the
-// module-level #tensixflow.schedule attribute (todo 30, attached by
+// The --tensixflow-lower-to-ttkernel pass: the codegen heart. It reads the
+// module-level #tensixflow.schedule attribute (attached by
 // --tensixflow-plan-noc-sharding + --tensixflow-allocate-circular-buffers) and the
-// graph it plans, then BUILDS the tile-level schedule IR (todo 31): a
+// graph it plans, then builds the tile-level schedule IR: a
 // `tensixflow.sched.kernel @<graphId>` holding three tile programs --
 //   reader  : a tile_loop staging activation tiles into in0 and weight tiles into
 //             in1 (noc_multicast when the weight strategy is "multicast", else a
@@ -22,14 +22,13 @@
 //             destination over the NoC.
 //
 // This is a STRUCTURE-PRODUCING lowering: it emits schedule IR ONLY. It emits NO
-// host C++ (Wave 6 todo 34-36) and changes NO numerics (the simulator, todo 39,
-// owns execution). CB indices are read from the schedule's allocation (default
+// host C++ and changes no numerics; the simulator owns execution. CB indices
+// are read from the schedule's allocation (default
 // 3-CB pipeline {0,1,16}); trip counts are a documented first-order tile
 // decomposition of the operand shapes over the modeled 32x32 tile.
 //
-// This is the real body for the LowerToTTKernelPass stub that previously lived in
-// TensixflowPasses.cpp (that stub + its GEN_PASS_DEF are removed so there is
-// exactly one definition of the pass and its createXxx()).
+// The pass registration lives with the other six in TensixflowPasses.cpp;
+// this file owns the lowering body and the pass definition.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +38,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "tensixflow/Codegen/EmitCommon.h"
 #include "tensixflow/TensixflowAttrs.h"
 #include "tensixflow/TensixflowOps.h"
 #include "tensixflow/TensixflowSchedule.h"
@@ -238,6 +238,12 @@ public:
     buildReader(b, kernelBlock, c);
     buildCompute(b, kernelBlock, c);
     buildWriter(b, kernelBlock, c);
+
+    // Trip counts alone cannot recover the element dimensions, and the host
+    // emitter sizes the DRAM buffers and the CPU reference matmul from them, so
+    // record M, N, K on the kernel.
+    kernel->setAttr(kMatmulShapeAttrName,
+                    b.getDenseI64ArrayAttr({m, n, k}));
 
     // The graph function has been lowered into the kernel; erase it so the kernel
     // is the sole symbol named graphId (the module is a SymbolTable and would

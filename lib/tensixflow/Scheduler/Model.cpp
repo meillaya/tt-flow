@@ -1,8 +1,8 @@
 //===- Model.cpp ------------------------------------------------*- C++ -*-===//
 //
-// Implementation of the TensixFlow scheduler data model (todo 25). See Model.h —
-// pure data + helpers, NO MLIR dependency. The enum toString helpers use
-// exhaustive switches (no default) so a new variant is a compile-time warning.
+// Implementation of the TensixFlow scheduler data model. See Model.h: pure data
+// and helpers with no MLIR dependency. The enum toString helpers use exhaustive
+// switches without a default, so adding a variant is a compile-time warning.
 //
 //===----------------------------------------------------------------------===//
 
@@ -85,6 +85,7 @@ plan::Plan toPlan(const PlanDraft &draft) {
   plan.layout = toSchemaLayout(draft.weightStrategy, draft.activationSharding);
   plan.shardGrid = draft.grid;
   plan.cbSpecs = draft.cbSpecs;
+  plan.device = draft.device;
   return plan;
 }
 

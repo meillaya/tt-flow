@@ -1,16 +1,17 @@
 //===- Model.h --------------------------------------------------*- C++ -*-===//
 //
-// TensixFlow scheduler in-memory data model (todo 25). Pure data + helpers with
-// NO MLIR dependency, so the planners (todos 26-29) and the CB allocator can
-// link the small MLIRTensixflowScheduler lib without dragging in the dialect.
+// TensixFlow scheduler in-memory data model. Pure data and helpers with no MLIR
+// dependency, so the planners and the circular-buffer allocator can link the
+// small MLIRTensixflowScheduler library without dragging in the dialect.
 //
 // The plan/perf/viz serialization structs (ShardGrid, CBSpec, Layout, Plan, ...)
-// are OWNED by PlanSchema.h (D15) and REUSED here by reference — this model does
-// NOT redefine them. The toSchema* / toPlan helpers below are the seam that lets
-// todo 30 build a PlanSchema::Plan from scheduler decisions for the report.
+// are owned by PlanSchema.h and reused here by reference. The toSchema* helpers
+// are the seam that turns scheduler decisions into a PlanSchema::Plan.
 //
-// Device constants mirror tt-metal: tt::CBIndex is c_0..c_31 (32 CBs), a tile is
-// 32x32, and bf16 is 2 bytes -> 2048 bytes/tile.
+// Hardware facts live in spec/devices.json and the generated
+// tensixflow/Generated/DeviceSpecs.h table, not in this file. A tile is the
+// Tenstorrent 32x32 tile; bf16 is 2 bytes per element, so a bf16 tile is 2048
+// bytes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,7 +47,7 @@ int bytesPerElem(const std::string &dtype);
 
 /// A logical tensor the scheduler reasons about: name, static dims, element
 /// dtype. Distinct from plan::TensorDesc (which adds a memory placement string
-/// for the report) — this is the pre-placement shape the planners start from.
+/// for the report); this is the pre-placement shape the planners start from.
 struct TensorShape {
   std::string name;
   std::vector<int64_t> dims;
@@ -59,7 +60,8 @@ struct TensorShape {
   int64_t bytes(int bytesPerElem) const;
 };
 
-/// A hardware tile. Defaults to the Tenstorrent 32x32 tile; bf16 -> 2048 bytes.
+/// A hardware tile. Defaults to the Tenstorrent 32x32 tile; bf16 gives 2048
+/// bytes. The generated device table carries the same numbers per device.
 struct TileShape {
   int64_t height = 32;
   int64_t width = 32;
@@ -76,6 +78,27 @@ struct TileShape {
 /// plan::ShardGrid so the struct itself is not redefined.
 inline int64_t totalCores(const plan::ShardGrid &grid) {
   return grid.gridY * grid.gridX;
+}
+
+//===----------------------------------------------------------------------===//
+// Circular-buffer index range (tt::CBIndex c_0..c_31)
+//===----------------------------------------------------------------------===//
+
+/// Highest valid CB index (tt::CBIndex runs c_0..c_31, so 32 buffers).
+constexpr int64_t kMaxCBIndex = 31;
+
+/// The default reader/compute/writer pipeline uses three circular buffers.
+constexpr int64_t kDefaultNumCBs = 3;
+
+/// tt-metal reader/compute/writer convention for the default three-CB pipeline:
+/// the two reader inputs are c_0 and c_1, and the writer output is c_16.
+constexpr int64_t kCBIn0 = 0;
+constexpr int64_t kCBIn1 = 1;
+constexpr int64_t kCBOut = 16;
+
+/// True iff index is a valid CB index (0..kMaxCBIndex inclusive).
+inline bool isValidCBIndex(int64_t index) {
+  return index >= 0 && index <= kMaxCBIndex;
 }
 
 //===----------------------------------------------------------------------===//
@@ -111,23 +134,11 @@ struct PipelineSchedule {
 };
 
 //===----------------------------------------------------------------------===//
-// Circular-buffer index range (tt::CBIndex c_0..c_31)
-//===----------------------------------------------------------------------===//
-
-/// Highest valid CB index (tt::CBIndex runs c_0..c_31 -> 32 CBs).
-constexpr int64_t kMaxCBIndex = 31;
-
-/// True iff index is a valid CB index (0..kMaxCBIndex inclusive).
-inline bool isValidCBIndex(int64_t index) {
-  return index >= 0 && index <= kMaxCBIndex;
-}
-
-//===----------------------------------------------------------------------===//
-// Conversion to the PlanSchema (report) structs — the todo-30 seam
+// Conversion to the PlanSchema (report) structs
 //===----------------------------------------------------------------------===//
 
 /// Build a plan::CBSpec from a CB index, depth (in tiles), and the tile's byte
-/// size (tile.bytes(bytesPerElem)).
+/// size (device.tileBytes).
 plan::CBSpec toSchemaCBSpec(int64_t index, int64_t depth, const TileShape &tile,
                             int bytesPerElem);
 
@@ -135,9 +146,9 @@ plan::CBSpec toSchemaCBSpec(int64_t index, int64_t depth, const TileShape &tile,
 plan::Layout toSchemaLayout(WeightStrategy strategy,
                             const std::string &activationSharding);
 
-/// Everything needed to assemble a report Plan from scheduler decisions. noc /
-/// perf / viz are left at their defaults for the planners (todos 26-29, 42) to
-/// fill; toPlan only maps the fields the scheduler model owns.
+/// Everything needed to assemble a report Plan from scheduler decisions. The
+/// noc and perf sections are left at their defaults for the planners and the
+/// perf model to fill; toPlan maps only the fields the scheduler model owns.
 struct PlanDraft {
   std::string graphId;
   std::vector<plan::TensorDesc> tensors;
@@ -145,6 +156,7 @@ struct PlanDraft {
   std::string activationSharding;
   plan::ShardGrid grid;
   std::vector<plan::CBSpec> cbSpecs;
+  plan::DeviceInfo device;
 };
 
 /// Assemble a plan::Plan from a PlanDraft (the single-arg conversion seam).

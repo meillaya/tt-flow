@@ -1,38 +1,35 @@
-//===- EmitMetaliumPass.cpp - Emit a tt-metal host.cpp ---------*- C++ -*-===//
+//===- EmitMetaliumPass.cpp - Emit a TT-Metalium project --------*- C++ -*-===//
 //
 // TensixFlow: An MLIR Compiler for Tile-Native LLM Kernels on
 // Tenstorrent-Style Spatial Accelerators.
 //
 //===----------------------------------------------------------------------===//
 //
-// The --tensixflow-emit-metalium pass: the Wave-6 codegen entry point. It reads
+// The --tensixflow-emit-metalium pass: the code generation entry point. It reads
 // the tile-level schedule IR (the `tensixflow.sched.kernel` built by
-// --tensixflow-lower-to-ttkernel) AND the module-level #tensixflow.schedule plan
-// attribute, then emits the four generated translation units to stdout:
-// host.cpp (emitHost), compute.cpp (emitCompute), reader.cpp (emitReader) and
-// writer.cpp (emitWriter), separated by `// ===== file: <name>.cpp =====`
-// delimiter banners (lib/tensixflow/Codegen/).
+// --tensixflow-lower-to-ttkernel), the module-level #tensixflow.schedule plan
+// attribute, and the module's tensixflow.device attribute, then emits the four
+// generated translation units of the pinned-tt-metal project:
 //
-// As of todo 36 the pass emits ALL FOUR artifacts (host + compute + reader +
-// writer). Todo 37 adds the project assembler: with the `output-dir` option
-// set (CLI: --tensixflow-emit-metalium=output-dir=<dir>), the pass writes a
-// complete standalone project tree to that directory instead of stdout --
-// host.cpp / reader.cpp / compute.cpp / writer.cpp (each emitter to its OWN
-// file, no banners) plus a compile-only CMakeLists.txt and a README.md (see
-// lib/tensixflow/Codegen/EmitProject.cpp). Input validation runs before ANY
-// output in both modes, so a failure never leaves a half-written tree. With
-// the option unset, the stdout + delimiter-banner behavior is unchanged.
+//   host.cpp            (emitHost),
+//   kernels/compute.cpp (emitCompute),
+//   kernels/reader.cpp  (emitReader),
+//   kernels/writer.cpp  (emitWriter).
 //
-// Ordering note: compute.cpp is emitted BETWEEN host.cpp and the dataflow
-// kernels (not after writer.cpp). host.cpp stays the prefix before the first
-// banner, and the todo-35 reader/writer FileCheck gates -- which assert no
-// compute math (matmul_tiles) from the reader banner to end of output -- stay
-// valid unmodified, since the compute kernel legitimately contains
-// matmul_tiles. Emitting compute after writer would break that assertion.
+// With the `output-dir` option set (--tensixflow-emit-metalium=output-dir=<dir>)
+// the pass writes a complete standalone project tree (the four sources plus a
+// TT-Metalium CMakeLists.txt and a README.md, see lib/tensixflow/Codegen/
+// EmitProject.cpp). With the option unset it prints the four artifacts to stdout
+// separated by file-delimiter banners.
 //
-// This is the real body for the EmitMetaliumPass stub that previously lived in
-// TensixflowPasses.cpp (that stub + its GEN_PASS_DEF_EMITMETALIUMPASS are removed
-// so there is exactly one definition of the pass and its createXxx()).
+// Validation runs before any output in both modes: the schedule attribute, the
+// sched.kernel, the matmul shape, and the unsupported fused path are all checked
+// first, so a failure never leaves a half-written tree and never reports a
+// compile that did not happen.
+//
+// The emitted project targets the pinned tt-metal release recorded in
+// deps/tt-metal.lock. scripts/build_generated.sh compiles and links it, and
+// scripts/run_generated.sh runs it under the official simulator.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,16 +37,20 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "tensixflow/Codegen/EmitCompute.h"
+#include "tensixflow/Codegen/EmitCommon.h"
 #include "tensixflow/Codegen/EmitHost.h"
 #include "tensixflow/Codegen/EmitProject.h"
 #include "tensixflow/Codegen/EmitReader.h"
 #include "tensixflow/Codegen/EmitWriter.h"
+#include "tensixflow/Generated/DeviceSpecs.h"
 #include "tensixflow/TensixflowAttrs.h"
 #include "tensixflow/TensixflowSchedule.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <string>
 
 namespace mlir {
 namespace tensixflow {
@@ -61,6 +62,17 @@ namespace tensixflow {
 
 namespace {
 
+// The device name carried by the module's tensixflow.device attribute; the
+// planner stamps it, and a default keeps a hand-written module emittable.
+llvm::StringRef resolveDeviceName(ModuleOp module) {
+  if (auto attr = module->getAttrOfType<StringAttr>("tensixflow.device")) {
+    if (device::lookup(attr.getValue())) {
+      return attr.getValue();
+    }
+  }
+  return device::defaultDeviceName();
+}
+
 class EmitMetaliumPass final
     : public impl::EmitMetaliumPassBase<EmitMetaliumPass> {
 public:
@@ -70,8 +82,7 @@ public:
   void runOnOperation() final {
     ModuleOp module = getOperation();
 
-    // The plan attribute is required input (attached by --tensixflow-plan-noc-
-    // sharding + --tensixflow-allocate-circular-buffers).
+    // The plan attribute is required input.
     auto schedule =
         module->getAttrOfType<TensixflowScheduleAttr>("tensixflow.schedule");
     if (!schedule) {
@@ -83,8 +94,7 @@ public:
       return;
     }
 
-    // The schedule-IR kernel is required input (built by --tensixflow-lower-to-
-    // ttkernel). Without it there is nothing to emit.
+    // The schedule-IR kernel is required input.
     TensixflowSchedKernelOp kernel;
     module.walk([&](TensixflowSchedKernelOp op) { kernel = op; });
     if (!kernel) {
@@ -95,15 +105,42 @@ public:
       return;
     }
 
-    // File mode (todo 37): assemble the complete standalone project tree under
-    // outputDir. Validation already passed above and emitProject renders every
-    // artifact to memory before the first filesystem touch, so nothing here can
-    // leave a half-written tree. Like stdout mode this is a terminal emission:
-    // exit 0 once the tree is written so mlir-opt does not append the module IR
-    // (stdout stays empty; the artifacts live in the files).
+    // The metal emitter covers the pure matmul path only. A fused graph would
+    // need tile intrinsics the pinned compute API does not export, so fail with
+    // the supported path and the planning alternative named instead of emitting
+    // a program that cannot compute the fused graph.
+    if (isFusedPlan(schedule)) {
+      kernel.emitError()
+          << "cannot emit a TT-Metalium program for the fused plan '"
+          << fusionKind(schedule)
+          << "'. The emitter supports the pure matmul path only "
+             "(tensixflow.matmul with no fused prologue or epilogue; see "
+             "examples/matmul.mlir). For a fused graph, use the plan and "
+             "report path: run the planning passes from examples/rmsnorm_matmul.mlir, "
+             "pipe the module into tensixflow-translate --tensixflow-to-json, "
+             "then render it with tensixflow-report.";
+      signalPassFailure();
+      return;
+    }
+
+    // The matmul shape is what sizes the DRAM buffers and the reference matmul
+    // in the emitted host program. Without it the emitter would have to invent
+    // the dimensions, so refuse.
+    if (!readMatmulShape(kernel)) {
+      kernel.emitError()
+          << "requires the " << kMatmulShapeAttrName
+          << " attribute on " << kernel.getSymName()
+          << "; run --tensixflow-lower-to-ttkernel to stamp it";
+      signalPassFailure();
+      return;
+    }
+
+    llvm::StringRef deviceName = resolveDeviceName(module);
+
+    // File mode: assemble the complete standalone project tree.
     if (!outputDir.empty()) {
       std::string error;
-      if (failed(emitProject(kernel, schedule, outputDir, error))) {
+      if (failed(emitProject(kernel, schedule, deviceName, outputDir, error))) {
         module.emitError("failed to write the Metalium project: ") << error;
         signalPassFailure();
         return;
@@ -111,12 +148,10 @@ public:
       std::exit(0);
     }
 
-    // Stdout mode (default): emit the four artifacts to stdout, each preceded
-    // by a file-delimiter banner (a valid C++ comment line, so an extracted
-    // artifact compiles whether the banner is kept or stripped). host.cpp is the
-    // prefix before the first banner; compute.cpp / reader.cpp / writer.cpp
-    // follow their banners. Compute precedes the dataflow kernels (see the
-    // ordering note in this file's header).
+    // Stdout mode: the four artifacts with file-delimiter banners. host.cpp is
+    // the prefix before the first banner; compute.cpp stays between host.cpp and
+    // the two data-movement kernels so the FileCheck gates on reader/writer
+    // output stay separate from the compute kernel.
     emitHost(kernel, schedule, llvm::outs());
     llvm::outs() << "\n// ===== file: compute.cpp =====\n";
     emitCompute(kernel, schedule, llvm::outs());
@@ -126,13 +161,10 @@ public:
     emitWriter(kernel, schedule, llvm::outs());
     llvm::outs().flush();
 
-    // mlir-opt prints the transformed module to stdout AFTER all passes run, and
-    // this MLIR build has no -disable-output flag. This is a TERMINAL emission
-    // pass whose stdout IS the artifact, so flush and exit here: the redirect
-    // target is then a standalone-compilable set of translation units rather than
-    // the artifacts followed by MLIR textual IR (which would fail the
-    // -fsyntax-only stub compile). Exit 0 == success; the failure paths above
-    // signalPassFailure() and let mlir-opt report + exit non-zero normally.
+    // mlir-opt prints the transformed module to stdout after all passes run, and
+    // this MLIR build has no -disable-output flag. This is a terminal emission
+    // pass whose stdout is the artifact set, so exit here with success; the
+    // failure paths above signal failure and let mlir-opt report it.
     std::exit(0);
   }
 };

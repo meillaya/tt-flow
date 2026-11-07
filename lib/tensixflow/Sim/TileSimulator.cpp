@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// See TileSimulator.h for the D14 contract. This file interprets the schedule IR
+// See TileSimulator.h for the rounding contract. This file interprets the schedule IR
 // (the sched.kernel's reader/compute/writer regions) and executes the denoted tile
 // computation over modeled bf16 circular buffers: round-on-push CB storage, fp32
 // accumulation within a tile across K-tiles (tiled accumulation order), and a bf16

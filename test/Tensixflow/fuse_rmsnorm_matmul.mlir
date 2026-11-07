@@ -27,7 +27,7 @@ tensixflow.func @single_use(%x: tensor<1x2048x4096xbf16>, %gamma: tensor<4096xbf
 //--- negative_multi_use.mlir
 
 // The rmsnorm result feeds BOTH a matmul (its LHS) AND a gelu, so it has two
-// uses and must stay materialized — the pair is NOT fused. Every result is
+// uses and must stay materialized, so the pair is NOT fused. Every result is
 // kept live (gelu -> second matmul -> add with the first matmul -> return) so
 // the greedy driver's DCE cannot remove the second use and accidentally enable
 // fusion. Presence of rmsnorm AND matmul proves no fusion happened (a fused op

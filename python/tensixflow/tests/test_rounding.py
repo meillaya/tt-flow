@@ -1,14 +1,14 @@
-"""Pytest for the TensixFlow bf16/fp32 rounding contract (draft D14, todo 38).
+"""Pytest for the TensixFlow bf16/fp32 rounding contract.
 
 Covers:
   * to_bf16 known values (round-trip of representable bf16, rounding of 1.0001);
   * round-to-nearest-EVEN tie rule (a value exactly halfway rounds to even);
   * inf / NaN / negative-zero handling;
   * to_bf16 matches an independent reference on the fixed 1000-value vector;
-  * the GOLDEN path holds a fused intermediate in fp32 (NOT bf16) — the
-    non-vacuity invariant the PCC bar (todo 41) relies on;
+  * the GOLDEN path holds a fused intermediate in fp32 (NOT bf16), the
+    non-vacuity invariant the PCC bar relies on;
   * C++/Python bit-for-bit consistency on 1000 random fp32 values (handshake
-    against the file the gtest writes — run `ctest -R rounding` first);
+    against the file the gtest writes; run `ctest -R rounding` first);
   * a deliberately-wrong rounding mode (truncation) is detected.
 """
 
@@ -101,7 +101,7 @@ def test_to_bf16_matches_reference_on_fixed_vector():
     assert np.array_equal(got, want)
 
 
-# --- GOLDEN path holds fp32 (NOT bf16) — the D14 non-vacuity invariant -----
+# --- GOLDEN path holds fp32 (NOT bf16), non-vacuity invariant ----------------
 
 
 def test_golden_holds_fused_intermediate_in_fp32_not_bf16():

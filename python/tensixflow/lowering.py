@@ -1,33 +1,20 @@
-"""TensixFlow DSL lowering driver (Stretch A, todo 48; draft D21 thin builder).
+"""TensixFlow DSL lowering driver.
 
-This is the body the ``@tensixflow.jit`` scaffold (todo 46) was waiting for. When a
-jitted kernel is called with real NumPy arrays, the driver:
+A call to a jitted kernel with positional NumPy arrays runs three steps:
 
-1. BUILDS the ``tensixflow`` MLIR TEXT from the kernel's EXPLICIT builder calls
-   (todo 47): the jitted function IS the ``body_fn`` — it takes a ``FuncBuilder``
-   plus one symbolic ``Value`` per input array and returns the result ``Value``
-   (``lambda b, x, gamma, w: b.matmul(b.rmsnorm(x, gamma), w)``). The driver
-   creates the builder, registers each input array as a symbolic arg (shape from
-   the array, bf16 element type per the LLM-kernel convention), calls the function
-   to make the builder calls, and renders the func text. NO AST / tracing (D21).
-2. Runs the FULL schedule-producing pipeline via the BUILT ``tensixflow-opt``
-   (the five ``--tensixflow-*`` passes) and serializes the resulting module-level
-   ``#tensixflow.schedule`` attr to the plan JSON via ``tensixflow-translate
-   --tensixflow-to-json`` (todo 24/30). The schedule attr is module-level and
-   PERSISTS through ``--tensixflow-lower-to-ttkernel`` (which erases the source
-   func), so the plan JSON's ``weight_strategy`` / ``fusion`` / ``shard_grid`` /
-   ``cb_specs`` / ``noc`` survive the full pipeline.
-3. TRIGGERS the simulator: the BUILT ``tensixflow-simulate`` (todo 39) runs the
-   same five-pass pipeline internally over the func and executes the REAL C++ tile
-   simulator over modeled bf16 circular buffers. The input tensors go in as the
-   self-describing ``.tft`` binary (REUSED from the todo-41 harness) and the output
-   tensor comes back out. The simulator reads the activation as rank-2 ``[M, K]``,
-   so the driver flattens any leading/batch dims into ``M`` (the harness/T44
-   contract; the func keeps its built shape, the simulator reconciles the grid).
+1. Build the ``tensixflow`` MLIR text from the kernel's explicit builder calls.
+   The jitted function is the body function: it receives a ``FuncBuilder`` and
+   one symbolic ``Value`` per input array, and returns the result ``Value``.
+2. Run the schedule-producing passes through the built ``tensixflow-opt`` and
+   serialize the module schedule attribute to plan JSON through
+   ``tensixflow-translate --tensixflow-to-json``.
+3. Run the built ``tensixflow-simulate`` over the same pipeline output. Inputs
+   and outputs use the self-describing ``.tft`` binary. The simulator reads the
+   activation as rank 2 ``[M, K]``, so the driver flattens leading batch dims
+   into ``M``.
 
-It returns a :class:`LoweredResult` carrying the plan JSON (with ``weight_strategy``)
-PLUS the simulator result array. CPU only: it invokes the built binaries, never a
-device, and never reimplements a pass in Python.
+The driver returns a ``LoweredResult`` with the plan JSON and the simulator
+result. It invokes the built binaries and does not reimplement a pass in Python.
 """
 
 from __future__ import annotations
@@ -93,12 +80,12 @@ def find_translate_bin() -> Path:
 class LoweredResult:
     """The outcome of lowering a jitted kernel + running the simulator.
 
-    * ``plan``   — the plan JSON (a dict) from ``tensixflow-translate``; carries the
+    * ``plan``: the plan JSON (a dict) from ``tensixflow-translate``. It carries the
       user-facing report fields (``weight_strategy``, ``fusion``, ``shard_grid``,
       ``cb_specs``, ``noc``, ...). ``weight_strategy`` is the acceptance field.
-    * ``output`` — the simulator's output tensor (fp32 ndarray, shape ``[M, N]``).
-    * ``mlir``   — the built ``tensixflow.func`` text (for debugging / the todo-49
-      DSL-vs-handwritten equivalence check).
+    * ``output``: the simulator's output tensor (fp32 ndarray, shape ``[M, N]``).
+    * ``mlir``: the built ``tensixflow.func`` text, for debugging and for the
+      DSL-versus-handwritten equivalence check.
     """
 
     plan: dict[str, object]

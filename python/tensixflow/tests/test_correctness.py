@@ -1,34 +1,34 @@
-"""Pytest for the TensixFlow correctness harness (todo 41, draft D14).
+"""Pytest for the TensixFlow correctness harness.
 
 The gate that proves the project's central correctness claim: the REAL C++
-functional tile simulator (todo 39, bf16-tiled) matches the fp32-EXACT NumPy
-golden (todo 40) to ``PCC >= 0.9875`` on BOTH example graphs (rmsnorm_matmul AND
+functional tile simulator matches the fp32-EXACT NumPy
+golden to ``PCC >= 0.9875`` on BOTH example graphs (rmsnorm_matmul AND
 mlp_block), with a two-layer non-vacuity defense so the bar can never silently
 degenerate into a trivial PCC ~= 1.0:
 
-* PRIMARY — STRUCTURAL: the golden holds its fused intermediate in fp32 (NOT
+* PRIMARY, STRUCTURAL: the golden holds its fused intermediate in fp32 (NOT
   bf16-representable) while the simulator output IS bf16-representable; PLUS
   BIT-DIFFERENCE: ``max_abs_diff(sim, golden) > 0`` (outputs NOT bit-identical).
-* SECONDARY — an empirically-calibrated upper-band PCC TRIP-WIRE (strictly above
+* SECONDARY, an empirically-calibrated upper-band PCC TRIP-WIRE (strictly above
   the measured good-case PCC, strictly below 1.0; never hard-coded to 0.9999):
   ``PCC < trip-wire``.
 
 The simulator is driven via the ``tensixflow-simulate`` C++ bridge (subprocess),
-so this validates the REAL C++ simulator — NOT a Python re-implementation, and NOT
+so this validates the real C++ simulator, not a Python re-implementation and not
 the emitted C++ kernels (compile-checked elsewhere). Uses a documented seed PLUS a
 few (no single seed can hide the bf16 divergence).
 
 Negative cases (verified on a scratch branch, NOT committed): a perturbed /
 wrong-rounding simulator drops PCC below 0.9875 (gate is live); forcing the golden
 to bf16-round intermediates fails the structural fp32 assertion (and, if both sides
-become bit-identical, ``max_abs_diff > 0``). See .omo/evidence/task-41-*.
+become bit-identical, ``max_abs_diff > 0``).
 """
 
 import pytest
 
 from tensixflow import harness as H
 
-# The FIXED correctness floor (arXiv:2606.09879). Asserted, never lowered.
+# The fixed correctness floor, documented in docs/verification.md. Asserted, never lowered.
 PCC_FLOOR = H.PCC_FLOOR
 
 TARGETS = ("rmsnorm_matmul", "mlp_block")
@@ -39,7 +39,7 @@ def results() -> dict:
     """Run the full harness once (every target x shape x seed) and record the
     metrics JSON evidence. Loud (raises) if the C++ bridge binary is missing."""
     res = H.run_harness(verbose=True)
-    H.write_metrics_json(res, H._repo_root() / ".omo" / "evidence" / "task-41-tensixflow.json")
+    H.write_metrics_json(res, H._repo_root() / "build" / "metrics" / "tensixflow-correctness.json")
     return res
 
 

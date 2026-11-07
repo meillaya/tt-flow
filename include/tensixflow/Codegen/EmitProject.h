@@ -5,23 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The project assembler (Wave 6, todo 37). Given the tile-level schedule IR
-// (a `tensixflow.sched.kernel`) and the module-level #tensixflow.schedule
-// plan, write a complete standalone TT-Metalium-style project tree:
+// The project assembler. Given the lowered schedule IR (a `tensixflow.sched.
+// kernel`), the module-level #tensixflow.schedule plan, and the device name from
+// the module's tensixflow.device attribute, write a complete standalone
+// TT-Metalium project tree:
 //
-//   host.cpp / reader.cpp / compute.cpp / writer.cpp -- the four emitters
-//       (todos 34-36), each rendered to its OWN file (no delimiter banners),
-//   CMakeLists.txt -- compile-only: every kernel is checked `-fsyntax-only`
-//       against the signature-only stub headers (todo 33). No link, no
-//       device, no tt-metal library,
-//   README.md -- kernel + plan summary, the current-API mapping, and the
-//       structural-validation disclaimer.
+//   host.cpp                       self-checking host program (EmitHost),
+//   kernels/reader.cpp             data-movement kernel (EmitReader),
+//   kernels/compute.cpp            matmul kernel (EmitCompute),
+//   kernels/writer.cpp             data-movement kernel (EmitWriter),
+//   CMakeLists.txt                 find_package(TT-Metalium) and TT::Metalium,
+//   README.md                      plan summary, build/run steps, limitations.
 //
-// All six artifacts are rendered to in-memory strings FIRST; nothing touches
-// the filesystem until every artifact exists in memory, so a render failure
-// cannot leave a half-written tree. Input validation (schedule attr + kernel)
-// is the caller's job and happens before emission entirely, so a validation
-// failure writes nothing either.
+// All six artifacts are rendered to memory before the first filesystem write, so
+// a render failure cannot leave a half-written tree. The caller validates the
+// schedule attribute, the kernel, the absence of a fused plan, and the matmul
+// shape before this function runs, so a validation failure also writes nothing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,29 +42,27 @@ namespace tensixflow {
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
 
-/// Render the generated project's CMakeLists.txt: a compile-only target that
-/// syntax-checks the four kernels against the stub headers (overridable via
-/// -DTT_METAL_STUBS_DIR, defaulting to the in-repo stubs for a project that
-/// lives at kernels/generated/<op>/).
+/// Render the generated project's CMakeLists.txt: a TT-Metalium executable that
+/// links the real package with find_package(TT-Metalium REQUIRED) and TT::Metalium
+/// and JIT-compiles the kernel sources at run time.
 void emitProjectCMakeLists(TensixflowSchedKernelOp kernel,
                            llvm::raw_ostream &os);
 
-/// Render the generated project's README.md: the kernel (graph, fusion,
-/// grid, circular-buffer allocation, tile program), the current-API mapping
-/// per file, and the structural-validation disclaimer.
+/// Render the generated project's README.md: the plan summary, the tile
+/// geometry, the circular-buffer allocation against the device's usable L1
+/// budget, the build/run commands, the one-core limitation, and the honesty
+/// statement for the pinned upstream release.
 void emitProjectReadme(TensixflowSchedKernelOp kernel,
-                       TensixflowScheduleAttr schedule, llvm::raw_ostream &os);
+                       TensixflowScheduleAttr schedule, llvm::StringRef deviceName,
+                       llvm::raw_ostream &os);
 
-/// Write the complete project tree (host.cpp, reader.cpp, compute.cpp,
-/// writer.cpp, CMakeLists.txt, README.md) for `kernel` + `schedule` into
-/// `outputDir`, creating the directory (and parents) as needed. On any I/O
-/// failure returns failure() and sets `error` to a descriptive message; the
-/// caller reports it as a diagnostic. `error` is the failure-detail channel
-/// (the kernel + schedule are the standard emitter source pair, outputDir the
-/// sink -- three distinct roles, hence the four parameters).
+/// Write the complete project tree for `kernel` + `schedule` into `outputDir`,
+/// creating the directory (and parents) as needed. On any I/O failure returns
+/// failure() and sets `error` to a descriptive message.
 LogicalResult emitProject(TensixflowSchedKernelOp kernel,
                           TensixflowScheduleAttr schedule,
-                          llvm::StringRef outputDir, std::string &error);
+                          llvm::StringRef deviceName, llvm::StringRef outputDir,
+                          std::string &error);
 
 } // namespace tensixflow
 } // namespace mlir

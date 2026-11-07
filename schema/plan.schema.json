@@ -2,11 +2,12 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://tensixflow.dev/schema/plan.schema.json",
   "title": "TensixFlow Plan",
-  "description": "Single source of truth (D15) for the plan/perf/viz JSON contract shared by the scheduler, the plan/perf report, and the HTML visualizer. Field names are snake_case to match the user spec report format.",
+  "description": "Validation contract for the plan/perf/viz JSON shared by the scheduler, the plan report, and the HTML visualizer. Field names are snake_case to match the project report format. Every perf number is a static projection, never a measured hardware value.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "graph_id",
+    "device",
     "tensors",
     "layout",
     "shard_grid",
@@ -20,31 +21,54 @@
       "type": "string",
       "description": "Identifier of the fused graph this plan schedules (e.g. \"rmsnorm_matmul\")."
     },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Device the plan was scheduled for. Values are copied from spec/devices.json through the generated device table; the name must exist there.",
+      "required": [
+        "name",
+        "arch",
+        "grid_x",
+        "grid_y",
+        "l1_usable_bytes",
+        "flops_per_cycle_per_core",
+        "dram_bandwidth_bytes_per_second"
+      ],
+      "properties": {
+        "name": { "type": "string", "description": "Device name or alias from spec/devices.json (e.g. \"n150\")." },
+        "arch": { "type": "string", "description": "Architecture name (e.g. \"wormhole_b0\" or \"blackhole\")." },
+        "grid_x": { "type": "integer", "format": "int64", "description": "Compute grid extent on the X axis, per die." },
+        "grid_y": { "type": "integer", "format": "int64", "description": "Compute grid extent on the Y axis, per die." },
+        "l1_usable_bytes": { "type": "integer", "format": "int64", "description": "Usable L1 bytes per Tensix core." },
+        "flops_per_cycle_per_core": { "type": "integer", "format": "int64", "description": "Matrix unit FLOPs per cycle per core at one fidelity phase." },
+        "dram_bandwidth_bytes_per_second": { "type": "integer", "format": "int64", "description": "Published DRAM bandwidth in bytes per second (board aggregate for two-chip products)." }
+      }
+    },
     "activation_sharding": {
       "type": "string",
-      "description": "Optional user-facing report field (the \"Chosen layout:\" report): activation sharding scheme, e.g. \"row-major\". Emitted at the top level by tensixflow-translate; mirrors layout.activation_sharding. Not required so plan::toJson output (which nests it under layout) stays valid."
+      "description": "Optional report field: activation sharding scheme, e.g. \"row-major\". Emitted at the top level by tensixflow-translate; mirrors layout.activation_sharding. Not required so plan::toJson output stays valid."
     },
     "weight_strategy": {
       "type": "string",
-      "description": "Optional user-facing report field: weight distribution strategy (\"replicate\"/\"shard\"/\"multicast\"). Emitted at the top level by tensixflow-translate; mirrors layout.weight_strategy."
+      "description": "Optional report field: weight distribution strategy (\"replicate\"/\"shard\"/\"multicast\"). Emitted at the top level by tensixflow-translate; mirrors layout.weight_strategy."
     },
     "intermediate_storage": {
       "type": "string",
-      "description": "Optional user-facing report field: where the fused intermediate is stored (\"L1\" when fused, else \"DRAM\")."
+      "description": "Optional report field: where the fused intermediate is stored (\"L1\" when fused, else \"DRAM\")."
     },
     "fusion": {
       "type": "string",
-      "description": "Optional user-facing report field: the fusion decision (\"fused_rmsnorm_matmul\"/\"fused_mlp\"/\"none\")."
+      "description": "Optional report field: the fusion decision (\"fused_rmsnorm_matmul\"/\"fused_mlp\"/\"none\")."
     },
     "estimated_dram_reads_saved": {
       "type": "integer",
       "format": "int64",
-      "description": "Optional user-facing report field: estimated DRAM read bytes saved by fusion (the intermediate that no longer round-trips DRAM); 0 when unfused."
+      "description": "Optional report field: projected DRAM read bytes saved by fusion (the intermediate that no longer round-trips DRAM); 0 when unfused."
     },
     "estimated_intermediate_writes_saved": {
       "type": "integer",
       "format": "int64",
-      "description": "Optional user-facing report field: estimated intermediate DRAM write bytes saved by fusion; 0 when unfused."
+      "description": "Optional report field: projected intermediate DRAM write bytes saved by fusion; 0 when unfused."
     },
     "tensors": {
       "type": "array",
@@ -79,8 +103,8 @@
       "additionalProperties": false,
       "required": ["grid_y", "grid_x"],
       "properties": {
-        "grid_y": { "type": "integer", "format": "int64", "description": "Core-grid height (e.g. 8)." },
-        "grid_x": { "type": "integer", "format": "int64", "description": "Core-grid width (e.g. 8)." }
+        "grid_y": { "type": "integer", "format": "int64", "description": "Core-grid height (the device compute grid Y extent)." },
+        "grid_x": { "type": "integer", "format": "int64", "description": "Core-grid width (the device compute grid X extent)." }
       }
     },
     "cb_specs": {
@@ -102,10 +126,10 @@
       "additionalProperties": false,
       "required": ["dram_read_bytes", "dram_write_bytes", "l1_bytes", "multicast_bytes"],
       "properties": {
-        "dram_read_bytes": { "type": "integer", "format": "int64", "description": "Estimated DRAM read traffic (bytes)." },
-        "dram_write_bytes": { "type": "integer", "format": "int64", "description": "Estimated DRAM write traffic (bytes)." },
-        "l1_bytes": { "type": "integer", "format": "int64", "description": "Estimated L1 traffic (bytes)." },
-        "multicast_bytes": { "type": "integer", "format": "int64", "description": "Estimated NoC multicast traffic (bytes)." }
+        "dram_read_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM read traffic (bytes)." },
+        "dram_write_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM write traffic (bytes)." },
+        "l1_bytes": { "type": "integer", "format": "int64", "description": "Projected L1 traffic (bytes)." },
+        "multicast_bytes": { "type": "integer", "format": "int64", "description": "Projected NoC multicast traffic (bytes)." }
       }
     },
     "perf": {
@@ -113,12 +137,12 @@
       "additionalProperties": false,
       "required": ["est_cycles", "compute_util", "bottleneck", "suggestions"],
       "properties": {
-        "est_cycles": { "type": "integer", "format": "int64", "description": "Estimated total cycles." },
-        "compute_util": { "type": "number", "description": "Compute utilization fraction (0.0..1.0)." },
-        "bottleneck": { "type": "string", "description": "Classification, e.g. \"memory\" or \"compute\"." },
+        "est_cycles": { "type": "integer", "format": "int64", "description": "Projected total cycles from the static roofline model." },
+        "compute_util": { "type": "number", "description": "Projected compute utilization fraction (0.0..1.0)." },
+        "bottleneck": { "type": "string", "description": "Binding constraint: \"compute\", \"dram\", \"noc\", or \"balanced\"." },
         "suggestions": {
           "type": "array",
-          "description": "Suggested optimizations.",
+          "description": "Suggested optimizations derived from the plan.",
           "items": { "type": "string" }
         }
       }
@@ -128,7 +152,7 @@
       "additionalProperties": false,
       "required": ["core_grid", "shards", "noc_routes", "cb_usage", "timeline"],
       "properties": {
-        "core_grid": { "type": "string", "description": "Visualizer core-grid section placeholder (todo 43 fills detail)." },
+        "core_grid": { "type": "string", "description": "Visualizer core-grid section placeholder." },
         "shards": { "type": "string", "description": "Visualizer shards section placeholder." },
         "noc_routes": { "type": "string", "description": "Visualizer NoC-routes section placeholder." },
         "cb_usage": { "type": "string", "description": "Visualizer CB-usage section placeholder." },

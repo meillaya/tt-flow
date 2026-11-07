@@ -1,8 +1,8 @@
-# TensixFlow benchmarks (todo 44, D21): SIMPLE timing loops -- NOT a benchmarking
+# TensixFlow benchmarks: simple timing loops, not a benchmarking
 # framework (no Google Benchmark dependency). Each bench drives the static perf
-# model (todo 42: buildPlanReport -> estimatePerf -> formatPerfReport, unfused vs
+# model (buildPlanReport -> estimatePerf -> formatPerfReport, unfused vs
 # fused) for the HEADLINE figures and runs a plain std::chrono loop over the
-# functional tile simulator (todo 39: runTileSimulator) for the fused path. The
+# functional tile simulator (runTileSimulator) for the fused path. The
 # perf figures are STATIC ESTIMATES and the simulator timing is a
 # functional-execution measure -- NEITHER is wall-clock hardware performance.
 #
@@ -38,17 +38,15 @@ target_link_libraries(bench_rmsnorm_matmul PRIVATE ${TENSIXFLOW_BENCH_LIBS})
 add_executable(bench_mlp_block bench_mlp_block.cpp)
 target_link_libraries(bench_mlp_block PRIVATE ${TENSIXFLOW_BENCH_LIBS})
 
-# Report-regeneration target (todo 44): (re)generates
-# reports/rmsnorm_matmul_report.html from reports/rmsnorm_matmul_plan.json via the
-# todo-43 tensixflow-report tool (self-contained offline HTML; the tool fills the
-# perf section from the static perf model). The output is a staged deliverable
-# artifact in the source tree. A missing/invalid plan.json makes tensixflow-report
-# exit 1 with a clear diagnostic BEFORE writing -- never a corrupt HTML.
-add_custom_target(regenerate-rmsnorm-report
-  COMMAND tensixflow-report
-          --in ${PROJECT_SOURCE_DIR}/reports/rmsnorm_matmul_plan.json
-          --out ${PROJECT_SOURCE_DIR}/reports/rmsnorm_matmul_report.html
-  DEPENDS tensixflow-report
-  COMMENT "Regenerating reports/rmsnorm_matmul_report.html via tensixflow-report"
+# Sample report target: plan examples/matmul.mlir, serialize the plan, and
+# render the offline HTML report into the build tree. The translate tool rejects
+# a plan without a device block, so this target also exercises the JSON
+# contract. No artifact from this target belongs in the source tree.
+add_custom_target(render-sample-report
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_BINARY_DIR}/reports"
+  COMMAND bash -c "$<TARGET_FILE:tensixflow-opt> --tensixflow-device=n150 --tensixflow-infer-tile-layout --tensixflow-plan-noc-sharding --tensixflow-allocate-circular-buffers ${PROJECT_SOURCE_DIR}/examples/matmul.mlir | $<TARGET_FILE:tensixflow-translate> --tensixflow-to-json > ${PROJECT_BINARY_DIR}/reports/matmul_plan.json"
+  COMMAND $<TARGET_FILE:tensixflow-report> --in "${PROJECT_BINARY_DIR}/reports/matmul_plan.json" --out "${PROJECT_BINARY_DIR}/reports/matmul_report.html"
+  DEPENDS tensixflow-opt tensixflow-translate tensixflow-report
+  COMMENT "Rendering the sample plan report into the build tree"
   VERBATIM
 )

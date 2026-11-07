@@ -1,0 +1,421 @@
+{
+  "schema_version": 1,
+  "retrieved": "2026-11-06",
+  "generator": "tools/gen_device_spec.py",
+  "note": "Single source of truth for hardware values. Edit this file, then run tools/gen_device_spec.py; do not hand-edit the generated header or Python module. Every numeric group names one source id from the sources table below.",
+  "default_device": "n150",
+  "model": {
+    "cb_depth_tiles": 2,
+    "cb_depth_basis": "tt-metal reader/compute/writer examples start at two tiles per circular buffer; the allocator clamps the request to the L1 budget.",
+    "l1_reserve_bytes": 65536,
+    "l1_reserve_basis": "Planner reserve for kernel code, stack, and runtime bookkeeping. This is a project planning choice, not a vendor figure.",
+    "fidelity_phases_modeled": 1,
+    "fidelity_phases_basis": "The project models one fidelity phase for the bf16 matmul path; the matrix unit needs one instruction per phase."
+  },
+  "sources": [
+    {
+      "id": "tt-aibs-wormhole",
+      "url": "https://docs.tenstorrent.com/aibs/wormhole/index.html",
+      "retrieved": "2026-11-06",
+      "supports": "Wormhole card specifications: 80 Tensix on the die, n150 72 Tensix at 1 GHz with 12 GB GDDR6 at 288 GB/s and 160 W, n300 two ASICs with 64 Tensix each and 24 GB at 576 GB/s and 300 W, PCIe 4.0 x16, 2x QSFP-DD 200G, Ubuntu 22.04"
+    },
+    {
+      "id": "tt-aibs-blackhole",
+      "url": "https://docs.tenstorrent.com/aibs/blackhole/index.html",
+      "retrieved": "2026-11-06",
+      "supports": "Blackhole card specifications: 120 Tensix, up to 1.35 GHz, p100a 28 GB GDDR6 at 448 GB/s, p150a 32 GB at 512 GB/s, 300 W, PCIe 5.0 x16, p150a 4x QSFP-DD 800G, 180 MB SRAM, Ubuntu 22.04"
+    },
+    {
+      "id": "tt-metal-wormhole-soc-desc",
+      "url": "https://github.com/tenstorrent/tt-metal/blob/main/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml",
+      "retrieved": "2026-11-06",
+      "supports": "Wormhole physical description: 10x12 NoC coordinate grid, 80 functional Tensix workers, arch name WORMHOLE_B0, worker L1 size 1499136 bytes"
+    },
+    {
+      "id": "tt-metal-wormhole-core-desc",
+      "url": "https://github.com/tenstorrent/tt-metal/blob/main/tt_metal/core_descriptors/wormhole_b0_80_arch.yaml",
+      "retrieved": "2026-11-06",
+      "supports": "Wormhole compute grids and dispatch: nebula_x1 row dispatch compute grid 8x8 for n150, nebula_x2 row dispatch compute grid 8x7 for n300"
+    },
+    {
+      "id": "tt-metal-blackhole-soc-desc",
+      "url": "https://github.com/tenstorrent/tt-metal/blob/main/tt_metal/soc_descriptors/blackhole_140_arch.yaml",
+      "retrieved": "2026-11-06",
+      "supports": "Blackhole physical description: 17x12 NoC coordinate grid, 140 functional Tensix workers, arch name BLACKHOLE, worker L1 size 1572864 bytes"
+    },
+    {
+      "id": "tt-metal-blackhole-core-desc",
+      "url": "https://github.com/tenstorrent/tt-metal/blob/main/tt_metal/core_descriptors/blackhole_140_arch.yaml",
+      "retrieved": "2026-11-06",
+      "supports": "Blackhole compute grids and column dispatch: unharvested 13x10, 1x harvested 12x10, 2x harvested 11x10"
+    },
+    {
+      "id": "tt-isa-l1",
+      "url": "https://github.com/tenstorrent/tt-isa-documentation/blob/main/WormholeB0/TensixTile/L1.md",
+      "retrieved": "2026-11-06",
+      "supports": "L1 size per Tensix tile: 1464 KiB on Wormhole and 1536 KiB on Blackhole; each NoC can read 256 bits per cycle and write 256 bits per cycle against L1"
+    },
+    {
+      "id": "tt-isa-matrix-unit",
+      "url": "https://github.com/tenstorrent/tt-isa-documentation/blob/main/WormholeB0/TensixTile/TensixCoprocessor/MatrixUnit.md",
+      "retrieved": "2026-11-06",
+      "supports": "Matrix unit throughput: 4.096 TFLOP/s per core at 1 GHz and one fidelity phase, one to four fidelity phases, and 72/64/80 Tensix tiles per n150/n300/Galaxy part"
+    },
+    {
+      "id": "tt-isa-noc",
+      "url": "https://github.com/tenstorrent/tt-isa-documentation/blob/main/WormholeB0/NoC/README.md",
+      "retrieved": "2026-11-06",
+      "supports": "NoC structure: two physically separate NoCs, 256-bit flits (32 bytes), and packets of one header flit plus up to 256 data flits (8192 data bytes)"
+    },
+    {
+      "id": "tt-metal-install",
+      "url": "https://github.com/tenstorrent/tt-metal/blob/main/INSTALLING.md",
+      "retrieved": "2026-11-06",
+      "supports": "Toolchain minimums: Ubuntu 22.04, tt-kmd v2.8.0 or above, firmware v19.8.1, tt-smi v5.0.0 or above, IOMMU required"
+    }
+  ],
+  "devices": {
+    "n150": {
+      "aliases": ["n150d", "n150s"],
+      "arch": "wormhole_b0",
+      "status": "released",
+      "chips": 1,
+      "die": {
+        "grid_x": 10,
+        "grid_y": 12,
+        "tensix_workers_per_die": 80,
+        "harvested_tensix_workers_per_die": 72
+      },
+      "sram_bytes": 113246208,
+      "compute": {
+        "grid_x": 8,
+        "grid_y": 8,
+        "dispatch_axis": "row",
+        "core_descriptor": "nebula_x1"
+      },
+      "l1": {
+        "usable_bytes": 1499136,
+        "nominal_bytes": 1572864
+      },
+      "tile": {
+        "height": 32,
+        "width": 32,
+        "dtype": "bf16",
+        "bytes": 2048
+      },
+      "clock_hz": 1000000000,
+      "matrix_unit": {
+        "macs_per_instruction": 2048,
+        "flops_per_cycle_per_core": 4096,
+        "fidelity_phases": 4
+      },
+      "dram": {
+        "bytes": 12884901888,
+        "bandwidth_bytes_per_second": 288000000000,
+        "type": "GDDR6",
+        "bus_bits": 192,
+        "data_rate_gt_per_second": 12
+      },
+      "noc": {
+        "count": 2,
+        "flit_bytes": 32,
+        "max_burst_bytes": 8192,
+        "l1_bytes_per_cycle_per_direction": 32
+      },
+      "pcie": {
+        "generation": 4,
+        "lanes": 16
+      },
+      "power_watts": 160,
+      "ethernet": [
+        "2x QSFP-DD 200G (active)",
+        "2x Warp 100 bridge"
+      ],
+      "toolchain": {
+        "os": "Ubuntu 22.04",
+        "kmd_min": "2.8.0",
+        "firmware_min": "19.8.1",
+        "tt_smi_min": "5.0.0",
+        "iommu": "required"
+      },
+      "sources": {
+        "arch": "tt-metal-wormhole-soc-desc",
+        "die": "tt-metal-wormhole-soc-desc",
+        "sram_bytes": "tt-aibs-wormhole",
+        "compute": "tt-metal-wormhole-core-desc",
+        "l1": "tt-metal-wormhole-soc-desc",
+        "clock_hz": "tt-aibs-wormhole",
+        "matrix_unit": "tt-isa-matrix-unit",
+        "dram": "tt-aibs-wormhole",
+        "noc": "tt-isa-noc",
+        "pcie": "tt-aibs-wormhole",
+        "power_watts": "tt-aibs-wormhole",
+        "ethernet": "tt-aibs-wormhole",
+        "toolchain": "tt-metal-install"
+      },
+      "notes": [
+        "The die has 80 Tensix workers on a 10x8 subset of the 10x12 NoC coordinate grid; the product harvests one row for 72 workers, and tt-metal reserves the last row for dispatch, leaving the 8x8 compute grid.",
+        "SRAM is the product-page aggregate of 108 MB counted as 1.5 MiB per Tensix tile; usable per-core L1 is 1499136 bytes.",
+        "The vendor page states 12 GB of GDDR6; this file records the capacity as 12 GiB bytes to match the project fact sheet.",
+        "The matrix unit figures hold for Wormhole at 1 GHz and one fidelity phase; the n150 TeraFLOPS ratings on the product page assume the same matrix unit."
+      ]
+    },
+    "n300": {
+      "aliases": ["n300d", "n300s"],
+      "arch": "wormhole_b0",
+      "status": "released",
+      "chips": 2,
+      "die": {
+        "grid_x": 10,
+        "grid_y": 12,
+        "tensix_workers_per_die": 80,
+        "harvested_tensix_workers_per_die": 64
+      },
+      "sram_bytes": 201326592,
+      "compute": {
+        "grid_x": 8,
+        "grid_y": 7,
+        "dispatch_axis": "row",
+        "core_descriptor": "nebula_x2"
+      },
+      "l1": {
+        "usable_bytes": 1499136,
+        "nominal_bytes": 1572864
+      },
+      "tile": {
+        "height": 32,
+        "width": 32,
+        "dtype": "bf16",
+        "bytes": 2048
+      },
+      "clock_hz": 1000000000,
+      "matrix_unit": {
+        "macs_per_instruction": 2048,
+        "flops_per_cycle_per_core": 4096,
+        "fidelity_phases": 4
+      },
+      "dram": {
+        "bytes": 25769803776,
+        "bandwidth_bytes_per_second": 576000000000,
+        "type": "GDDR6",
+        "bus_bits": 192,
+        "data_rate_gt_per_second": 12
+      },
+      "noc": {
+        "count": 2,
+        "flit_bytes": 32,
+        "max_burst_bytes": 8192,
+        "l1_bytes_per_cycle_per_direction": 32
+      },
+      "pcie": {
+        "generation": 4,
+        "lanes": 16
+      },
+      "power_watts": 300,
+      "ethernet": [
+        "2x QSFP-DD 200G (active)",
+        "2x Warp 100 bridge",
+        "internal chip-to-chip 200G"
+      ],
+      "toolchain": {
+        "os": "Ubuntu 22.04",
+        "kmd_min": "2.8.0",
+        "firmware_min": "19.8.1",
+        "tt_smi_min": "5.0.0",
+        "iommu": "required"
+      },
+      "sources": {
+        "arch": "tt-metal-wormhole-soc-desc",
+        "die": "tt-metal-wormhole-soc-desc",
+        "sram_bytes": "tt-aibs-wormhole",
+        "compute": "tt-metal-wormhole-core-desc",
+        "l1": "tt-metal-wormhole-soc-desc",
+        "clock_hz": "tt-aibs-wormhole",
+        "matrix_unit": "tt-isa-matrix-unit",
+        "dram": "tt-aibs-wormhole",
+        "noc": "tt-isa-noc",
+        "pcie": "tt-aibs-wormhole",
+        "power_watts": "tt-aibs-wormhole",
+        "ethernet": "tt-aibs-wormhole",
+        "toolchain": "tt-metal-install"
+      },
+      "notes": [
+        "Two Wormhole ASICs per board; each die harvests two rows for 64 Tensix workers, and tt-metal reserves the last row for dispatch, leaving an 8x7 compute grid per chip.",
+        "The 576 GB/s DRAM bandwidth and 24 GiB capacity are board aggregates across the two ASICs; the bandwidth row in this file is the aggregate the board reports.",
+        "SRAM is the product-page aggregate of 192 MB counted as 1.5 MiB per Tensix tile over 128 tiles.",
+        "The vendor page states 24 GB of GDDR6; this file records the capacity as 24 GiB bytes to match the project fact sheet."
+      ]
+    },
+    "p100a": {
+      "aliases": ["bh_p100a"],
+      "arch": "blackhole",
+      "status": "released",
+      "chips": 1,
+      "die": {
+        "grid_x": 17,
+        "grid_y": 12,
+        "tensix_workers_per_die": 140,
+        "harvested_tensix_workers_per_die": 120
+      },
+      "sram_bytes": 188743680,
+      "compute": {
+        "grid_x": 12,
+        "grid_y": 10,
+        "dispatch_axis": "col",
+        "core_descriptor": "1xharvested"
+      },
+      "l1": {
+        "usable_bytes": 1572864,
+        "nominal_bytes": 1572864
+      },
+      "tile": {
+        "height": 32,
+        "width": 32,
+        "dtype": "bf16",
+        "bytes": 2048
+      },
+      "clock_hz": 1350000000,
+      "matrix_unit": {
+        "macs_per_instruction": 2048,
+        "flops_per_cycle_per_core": 4096,
+        "fidelity_phases": 4
+      },
+      "dram": {
+        "bytes": 30064771072,
+        "bandwidth_bytes_per_second": 448000000000,
+        "type": "GDDR6",
+        "bus_bits": 256,
+        "data_rate_gt_per_second": 16
+      },
+      "noc": {
+        "count": 2,
+        "flit_bytes": 32,
+        "max_burst_bytes": 8192,
+        "l1_bytes_per_cycle_per_direction": 32
+      },
+      "pcie": {
+        "generation": 5,
+        "lanes": 16
+      },
+      "power_watts": 300,
+      "ethernet": [],
+      "toolchain": {
+        "os": "Ubuntu 22.04",
+        "kmd_min": "2.8.0",
+        "firmware_min": "19.8.1",
+        "tt_smi_min": "5.0.0",
+        "iommu": "required"
+      },
+      "sources": {
+        "arch": "tt-metal-blackhole-soc-desc",
+        "die": "tt-metal-blackhole-soc-desc",
+        "sram_bytes": "tt-aibs-blackhole",
+        "compute": "tt-metal-blackhole-core-desc",
+        "l1": "tt-isa-l1",
+        "clock_hz": "tt-aibs-blackhole",
+        "matrix_unit": "tt-isa-matrix-unit",
+        "dram": "tt-aibs-blackhole",
+        "noc": "tt-isa-noc",
+        "pcie": "tt-aibs-blackhole",
+        "power_watts": "tt-aibs-blackhole",
+        "ethernet": "tt-aibs-blackhole",
+        "toolchain": "tt-metal-install"
+      },
+      "notes": [
+        "Three Blackhole core counts disagree and this file does not pick one silently: the soc descriptor lists 140 functional Tensix workers on the die, the unharvested core descriptor lists a 13x10 compute grid (130), and the product page lists 120 Tensix cores. The scheduler models the product figure: the 1x harvested descriptor grid of 12x10 equals 120.",
+        "The die has 17x12 NoC coordinates; the Tensix workers occupy 14 columns by 10 rows.",
+        "SRAM is the product-page aggregate of 180 MB counted as 1.5 MiB per Tensix tile over 120 product cores.",
+        "The vendor page states 28 GB of GDDR6; this file records the capacity as 28 GiB bytes to match the project fact sheet.",
+        "The 4096 FLOPs per cycle per core figure comes from the matrix unit; at 1.35 GHz across 120 cores the same figure reproduces the product page BLOCKFP8 rating of 664 TFLOP/s.",
+        "The NoC block uses the Wormhole ISA documentation because the retrieved Blackhole ISA set has no NoC page; tt-metal configures noc0 and noc1 on Blackhole."
+      ]
+    },
+    "p150a": {
+      "aliases": ["bh_p150a"],
+      "arch": "blackhole",
+      "status": "released",
+      "chips": 1,
+      "die": {
+        "grid_x": 17,
+        "grid_y": 12,
+        "tensix_workers_per_die": 140,
+        "harvested_tensix_workers_per_die": 120
+      },
+      "sram_bytes": 188743680,
+      "compute": {
+        "grid_x": 12,
+        "grid_y": 10,
+        "dispatch_axis": "col",
+        "core_descriptor": "1xharvested"
+      },
+      "l1": {
+        "usable_bytes": 1572864,
+        "nominal_bytes": 1572864
+      },
+      "tile": {
+        "height": 32,
+        "width": 32,
+        "dtype": "bf16",
+        "bytes": 2048
+      },
+      "clock_hz": 1350000000,
+      "matrix_unit": {
+        "macs_per_instruction": 2048,
+        "flops_per_cycle_per_core": 4096,
+        "fidelity_phases": 4
+      },
+      "dram": {
+        "bytes": 34359738368,
+        "bandwidth_bytes_per_second": 512000000000,
+        "type": "GDDR6",
+        "bus_bits": 256,
+        "data_rate_gt_per_second": 16
+      },
+      "noc": {
+        "count": 2,
+        "flit_bytes": 32,
+        "max_burst_bytes": 8192,
+        "l1_bytes_per_cycle_per_direction": 32
+      },
+      "pcie": {
+        "generation": 5,
+        "lanes": 16
+      },
+      "power_watts": 300,
+      "ethernet": [
+        "4x QSFP-DD 800G (passive)"
+      ],
+      "toolchain": {
+        "os": "Ubuntu 22.04",
+        "kmd_min": "2.8.0",
+        "firmware_min": "19.8.1",
+        "tt_smi_min": "5.0.0",
+        "iommu": "required"
+      },
+      "sources": {
+        "arch": "tt-metal-blackhole-soc-desc",
+        "die": "tt-metal-blackhole-soc-desc",
+        "sram_bytes": "tt-aibs-blackhole",
+        "compute": "tt-metal-blackhole-core-desc",
+        "l1": "tt-isa-l1",
+        "clock_hz": "tt-aibs-blackhole",
+        "matrix_unit": "tt-isa-matrix-unit",
+        "dram": "tt-aibs-blackhole",
+        "noc": "tt-isa-noc",
+        "pcie": "tt-aibs-blackhole",
+        "power_watts": "tt-aibs-blackhole",
+        "ethernet": "tt-aibs-blackhole",
+        "toolchain": "tt-metal-install"
+      },
+      "notes": [
+        "The same three-way Blackhole core-count disagreement applies: 140 functional Tensix workers on the die, a 13x10 unharvested descriptor grid, and 120 product cores. The scheduler models the 12x10 1x harvested grid that matches the product count.",
+        "The die has 17x12 NoC coordinates; the Tensix workers occupy 14 columns by 10 rows.",
+        "SRAM is the product-page aggregate of 180 MB counted as 1.5 MiB per Tensix tile over 120 product cores.",
+        "The vendor page states 32 GB of GDDR6; this file records the capacity as 32 GiB bytes to match the project fact sheet.",
+        "The p150b card has identical compute and memory specifications to the p150a and a passive heatsink; only the p150a is modeled here.",
+        "The 4096 FLOPs per cycle per core figure comes from the matrix unit; at 1.35 GHz across 120 cores the same figure reproduces the product page BLOCKFP8 rating of 664 TFLOP/s.",
+        "The NoC block uses the Wormhole ISA documentation because the retrieved Blackhole ISA set has no NoC page; tt-metal configures noc0 and noc1 on Blackhole."
+      ]
+    }
+  }
+}

@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The correctness-harness bridge (todo 41, draft D14). The Python harness
+// The correctness-harness bridge. The Python harness
 // (python/tensixflow/harness.py) cannot call the C++ functional tile simulator
-// (todo 39) directly, so this small tool wraps it end-to-end:
+// (lib/tensixflow/Sim) directly, so this small tool wraps it end-to-end:
 //
 //   1. parse an example func (examples/rmsnorm_matmul.mlir / mlp_block.mlir);
 //   2. run the full schedule-producing pipeline -- infer-tile-layout ->
@@ -16,11 +16,11 @@
 //      under test: fusion decision + CB allocation);
 //   3. read the input tensors (activation, weight, gamma) the harness wrote to a
 //      self-describing binary file (the .tft format below);
-//   4. run `sim::runTileSimulator` (the REAL C++ simulator, todo 39) over modeled
+//   4. run `sim::runTileSimulator` (the C++ simulator) over modeled
 //      bf16 circular buffers, allocating exactly the CBs the kernel references
 //      (collectReferencedCBs -- includes the rmsnorm gamma c_2);
 //   5. write the output tensor (shape + fp32 data) back to a .tft file the harness
-//      reads and compares against the fp32-exact golden (todo 40).
+//      reads and compares against the fp32-exact golden.
 //
 // This validates the REAL C++ simulator -- it does NOT re-implement it in Python
 // and does NOT touch the emitted C++ kernels (those are compile-checked elsewhere).

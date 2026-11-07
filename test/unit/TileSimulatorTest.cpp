@@ -1,6 +1,6 @@
 //===- TileSimulatorTest.cpp -------------------------------------*- C++ -*-===//
 //
-// Unit tests for the TensixFlow functional tile simulator (todo 39, draft D14) in
+// Unit tests for the TensixFlow functional tile simulator in
 // lib/tensixflow/Sim/TileSimulator.cpp. The simulator EXECUTES the tile-level
 // schedule IR (sched.kernel) over modeled bf16 circular buffers -- it does NOT
 // parse/execute the emitted C++. These tests prove:
@@ -24,7 +24,7 @@
 // the fp32-exact reference. bf16 has 7 mantissa bits (RNE max relative error
 // 2^-8 ~= 3.9e-3); the bounds below are a small multiple of that, scaled by the
 // K=64 accumulation depth. The observed maxAbsDiff/maxRelDiff are printed so the
-// bounds can be calibrated; they are documented in .omo/notepads/tensixflow.
+// bounds can be calibrated.
 //
 //===----------------------------------------------------------------------===//
 
@@ -91,7 +91,7 @@ sim::Tensor makeTensor(std::vector<int64_t> shape, float lo, float hi, Lcg &lcg)
 }
 
 //===----------------------------------------------------------------------===//
-// fp32-EXACT references (the golden semantics, todo 40: no intermediate rounding).
+// fp32-EXACT references (the golden semantics: no intermediate rounding).
 //===----------------------------------------------------------------------===//
 
 // C[M,N] = A[M,K] @ B[K,N], fp32 accumulate, no rounding.

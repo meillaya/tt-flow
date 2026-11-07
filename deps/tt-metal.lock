@@ -1,0 +1,51 @@
+# Pinned upstream artifacts for the TT-Metalium host build and the ttsim CPU
+# simulator. The hashes are the sha256 digests published on the GitHub release
+# assets, cross-checked against the downloaded files. Ubuntu 24.04 amd64 is the
+# primary target; the 22.04 assets are recorded at the end as the documented
+# fallback. Update this file only together with the matching headers under
+# .deps, because the emitter is written against this tag.
+
+TT_METAL_TAG=v0.82.0-rc2
+TT_METAL_RELEASE_BASE=https://github.com/tenstorrent/tt-metal/releases/download/v0.82.0-rc2
+
+# Headers and the CMake package (usr/lib/cmake/tt-metalium).
+TT_METAL_DEV_DEB=tt-metalium-dev_0.82.0.rc2.ubuntu24.04_amd64.deb
+TT_METAL_DEV_SHA256=d481ece0344ed692732f99aa0f191446296f54f889746466d0fd5614100d9d81
+
+# Runtime: libtt_metal.so and the metalium runtime tree.
+TT_METAL_RUNTIME_DEB=tt-metalium_0.82.0.rc2.ubuntu24.04_amd64.deb
+TT_METAL_RUNTIME_SHA256=fa557a8bbecc350c9c4519cbc3fe8ad732f5e27a22687dda1ba5d21c224d4c86
+
+# JIT: the riscv-tt-elf compiler and its runtime, required to build kernels.
+TT_METAL_JIT_DEB=tt-metalium-jit_0.82.0.rc2.ubuntu24.04_amd64.deb
+TT_METAL_JIT_SHA256=2bf6a52bf6029ab927f87d1706b9ad22f8a7f1fbc1246a054ea1cbabb6aac618
+
+# Kernel sources for the pinned programming examples.
+TT_METAL_EXAMPLES_DEB=tt-metalium-examples_0.82.0.rc2.ubuntu24.04_amd64.deb
+TT_METAL_EXAMPLES_SHA256=6e21c89cd5620a40a3a39c90ac2cb87497b0c205d2fb75a725cb2ff4e9106353
+
+# Official Tenstorrent simulator. ttsim v1.15.1 is the simulator version that
+# matches the tt-metal v0.82.0-rc2 release train. Only the Wormhole build is
+# pinned because that is the family the emitted N150/N300 plans target.
+TTSIM_TAG=v1.15.1
+TTSIM_BASE=https://github.com/tenstorrent/ttsim/releases/download/v1.15.1
+TTSIM_WH_SO=libttsim_wh.so
+TTSIM_WH_SHA256=fb661d497f384704ae4697ae6a1a3e4dd04dded708701c151ec76cc796737188
+
+# ttsim releases before v0.83 expect the SoC descriptor beside the shared
+# library as soc_descriptor.yaml. The released tt-metal tag is the
+# authoritative source for the descriptor that matches its own runtime.
+SOC_DESCRIPTOR_URL=https://raw.githubusercontent.com/tenstorrent/tt-metal/v0.82.0-rc2/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml
+SOC_DESCRIPTOR_SHA256=24fd3dfae80435a7d9113e255d6d6af9cdf83f6ae3b1c385e1d48a24795ccf49
+
+# Fallback assets, used only if the Ubuntu 24.04 debs cannot link on this
+# machine. The fetch script does not read these; they are recorded so the
+# fallback is reproducible without a second web lookup.
+TT_METAL_2204_DEV_DEB=tt-metalium-dev_0.82.0.rc2.ubuntu22.04_amd64.deb
+TT_METAL_2204_DEV_SHA256=781ed7ea8bf1c12491a9bbcf2107319f116a01c823411965af39310b6cec3640
+TT_METAL_2204_RUNTIME_DEB=tt-metalium_0.82.0.rc2.ubuntu22.04_amd64.deb
+TT_METAL_2204_RUNTIME_SHA256=bb7148ab0d5d569d8050f0974e1aef0c0a7e2db66a790925af059620e96819f7
+TT_METAL_2204_JIT_DEB=tt-metalium-jit_0.82.0.rc2.ubuntu22.04_amd64.deb
+TT_METAL_2204_JIT_SHA256=c6cd85ee634fa2b89a2adce0bb6bd9f881d72f69f2f77309fbd132c3f7cda197
+TT_METAL_2204_EXAMPLES_DEB=tt-metalium-examples_0.82.0.rc2.ubuntu22.04_amd64.deb
+TT_METAL_2204_EXAMPLES_SHA256=dab12cf19e35487ed77f7c33897facf7ca3cab7cf6ead05226363be0663f729c

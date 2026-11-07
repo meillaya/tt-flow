@@ -38,19 +38,33 @@ add_mlir_dialect_library(MLIRTensixflow
   MLIRTensixflowScheduler
   )
 
-# Plan/perf/viz schema library (D15). Own subdirectory because LLVM enforces one
+# Plan/perf/viz schema library. Own subdirectory because LLVM enforces one
 # build target per directory; see Schema/CMakeLists.txt.
 add_subdirectory(Schema)
 
-# Scheduler data-model library (todo 25). Own subdirectory for the same reason;
-# see Scheduler/CMakeLists.txt.
+# Scheduler data-model library. Own subdirectory for the same reason; see
+# Scheduler/CMakeLists.txt.
 add_subdirectory(Scheduler)
 
-# Static performance-model library (todo 42). Own subdirectory for the same
-# reason; see Analysis/CMakeLists.txt. Links the scheduler lib PUBLIC (NoC
-# estimator + L1-budget constants + plan structs), so it is added after Scheduler.
+# Static performance-model library. Own subdirectory for the same reason; see
+# Analysis/CMakeLists.txt. Links the scheduler library PUBLIC for the NoC
+# estimator, the device table, and the plan structs, so it is added after
+# Scheduler.
 add_subdirectory(Analysis)
 
-# Functional tile simulator library (todo 39, D14). Own subdirectory for the same
-# reason; see Sim/CMakeLists.txt. Links MLIRTensixflow (it walks the schedule IR).
+# Functional tile simulator library. Own subdirectory for the same reason; see
+# Sim/CMakeLists.txt. Links MLIRTensixflow (it walks the schedule IR).
 add_subdirectory(Sim)
+
+# Prove the committed device tables match spec/devices.json. The C++ build reads
+# the committed header, so this target is what keeps the header honest; the
+# repository test script also runs the generator --check directly.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_custom_target(check-device-spec
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/gen_device_spec.py
+          --check
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  COMMENT "Checking generated device spec against spec/devices.json"
+  VERBATIM
+  USES_TERMINAL
+)

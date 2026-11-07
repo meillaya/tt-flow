@@ -1,26 +1,13 @@
-"""TensixFlow rounding contract (draft D14) — the Python twin of
-``lib/tensixflow/Sim/Rounding.h``, BIT-FOR-BIT identical (proven by the
-C++/Python consistency test in ``tests/test_rounding.py``).
+"""TensixFlow rounding contract: the Python twin of
+``lib/tensixflow/Sim/Rounding.h``, bit-for-bit identical.
 
-THE D14 CONTRACT — the simulator and the golden are DELIBERATELY at different
-precision so the PCC bar (todo 41, >= 0.9875) measures REAL bf16-spatial-vs-exact
-divergence rather than collapsing to ~1.0:
+The simulator path rounds inputs to bf16 (round-to-nearest-even), accumulates in
+fp32 within a tile, rounds each output tile to bf16, and stores fused
+intermediates as bf16. The golden path keeps every intermediate in fp32. The two
+paths differ on purpose so the PCC bar of 0.9875 measures real bf16 divergence.
 
-* SIMULATOR path (``to_bf16``) = bf16 SPATIAL hardware model: inputs rounded to
-  bf16 (round-to-nearest-even); matmul/rmsnorm/gelu ACCUMULATE in fp32 WITHIN a
-  tile; each output TILE rounded back to bf16; fused SRAM / circular-buffer
-  INTERMEDIATES between stages stored as bf16 (rounded between fused stages).
-  The simulator must NOT silently keep fp32 storage for fused intermediates.
-
-* GOLDEN path (``golden_passthrough``) = fp32-EXACT reference: fp32 accumulate,
-  fp32 intermediates, NO bf16 rounding of intermediates (the identity on fp32).
-  The golden must NOT round intermediates to bf16 — that makes the two paths
-  identical and the PCC bar VACUOUS (PCC -> 1.0).
-
-bf16 = sign(1) + exponent(8) + mantissa(7): the HIGH 16 bits of an IEEE-754
-fp32, with the LOW 16 bits rounded. ``to_bf16`` is round-to-nearest-EVEN (the
-+lsb bias makes exact ties land on the even candidate), matching
-tt-metal@df36cd6 base_types.hpp DataType::BFloat16. NaN inputs canonicalize to a
+bf16 is the high 16 bits of an IEEE-754 fp32 with the low 16 bits rounded.
+``to_bf16`` rounds to nearest even. NaN inputs canonicalize to a
 sign-preserving quiet NaN; inf and negative zero pass through unchanged.
 """
 
@@ -128,9 +115,9 @@ def to_bf16_reference(x: object) -> object:
 
 
 def golden_passthrough(x: object) -> object:
-    """GOLDEN fp32-exact path (D14): the identity on fp32 — NO bf16 rounding of
-    intermediates. The golden (todo 40) calls this; the simulator (todo 39)
-    calls ``to_bf16``. Preserves every fp32 bit exactly."""
+    """GOLDEN fp32-exact path: the identity on fp32, with NO bf16 rounding of
+    intermediates. The golden calls this; the simulator calls ``to_bf16``.
+    Preserves every fp32 bit exactly."""
     arr = np.asarray(x, dtype=np.float32)
     return float(arr) if arr.ndim == 0 else arr
 

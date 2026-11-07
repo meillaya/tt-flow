@@ -1,10 +1,12 @@
 //===- PlanSchemaTest.cpp ---------------------------------------*- C++ -*-===//
 //
-// Unit tests for the TensixFlow plan/perf/viz JSON schema (todo 24, D15):
-//   1. RoundTrip          — serialize a sample plan, re-parse field-for-field.
-//   2. ConformsToSchema   — validate the sample against schema/plan.schema.json.
-//   3. RejectsMissingField — a missing required field is rejected (parsePlan +
-//                            the schema validator both fail).
+// Unit tests for the TensixFlow plan/perf/viz JSON schema:
+//   1. RoundTrip          - serialize a sample plan, re-parse field-for-field,
+//                           including the required device block.
+//   2. ConformsToSchema   - validate the sample against schema/plan.schema.json.
+//   3. RejectsMissingField - a missing required field, including the device
+//                           block, is rejected by parsePlan and by the schema
+//                           validator.
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,6 +52,13 @@ Plan makeSamplePlan() {
   weight.placement = "DRAM";
 
   plan.tensors = {activation, weight};
+  plan.device.name = "n150";
+  plan.device.arch = "wormhole_b0";
+  plan.device.gridX = 8;
+  plan.device.gridY = 8;
+  plan.device.l1UsableBytes = 1499136;
+  plan.device.flopsPerCyclePerCore = 4096;
+  plan.device.dramBandwidthBytesPerSecond = 288000000000;
   plan.layout.activationSharding = "row-major";
   plan.layout.weightStrategy = "multicast";
   plan.shardGrid.gridY = 8;
@@ -152,6 +161,16 @@ TEST(PlanSchemaTest, RoundTrip) {
     EXPECT_EQ(reparsed->tensors[i].placement, original.tensors[i].placement);
   }
 
+  EXPECT_EQ(reparsed->device.name, original.device.name);
+  EXPECT_EQ(reparsed->device.arch, original.device.arch);
+  EXPECT_EQ(reparsed->device.gridX, original.device.gridX);
+  EXPECT_EQ(reparsed->device.gridY, original.device.gridY);
+  EXPECT_EQ(reparsed->device.l1UsableBytes, original.device.l1UsableBytes);
+  EXPECT_EQ(reparsed->device.flopsPerCyclePerCore,
+            original.device.flopsPerCyclePerCore);
+  EXPECT_EQ(reparsed->device.dramBandwidthBytesPerSecond,
+            original.device.dramBandwidthBytesPerSecond);
+
   EXPECT_EQ(reparsed->layout.activationSharding,
             original.layout.activationSharding);
   EXPECT_EQ(reparsed->layout.weightStrategy, original.layout.weightStrategy);
@@ -222,6 +241,20 @@ TEST(PlanSchemaTest, RejectsMissingField) {
   validateAgainstSchema(*schema, *planValue, "$", errors);
   EXPECT_FALSE(errors.empty())
       << "schema validator must flag the missing graph_id";
+
+  // The device block is required too: a plan without one is rejected.
+  std::optional<json::Value> withoutDevice =
+      parseText(toJson(makeSamplePlan()));
+  ASSERT_TRUE(withoutDevice.has_value());
+  json::Object *withoutDeviceObj = withoutDevice->getAsObject();
+  ASSERT_NE(withoutDeviceObj, nullptr);
+  ASSERT_TRUE(withoutDeviceObj->erase("device"));
+  EXPECT_FALSE(parsePlan(*withoutDevice).has_value())
+      << "parsePlan must reject a plan missing the device block";
+  std::vector<std::string> deviceErrors;
+  validateAgainstSchema(*schema, *withoutDevice, "$", deviceErrors);
+  EXPECT_FALSE(deviceErrors.empty())
+      << "schema validator must flag the missing device block";
 }
 
 } // namespace

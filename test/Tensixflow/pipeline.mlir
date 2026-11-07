@@ -1,6 +1,6 @@
 // RUN: tensixflow-opt --pass-pipeline='builtin.module(tensixflow-infer-tile-layout,tensixflow-canonicalize)' %s | FileCheck %s
 
-// The D22 probe: proves the two-pass --pass-pipeline REGISTRATION +
+// The pipeline probe: proves the two-pass --pass-pipeline REGISTRATION +
 // COMPOSITION works (the pipeline syntax was unverified during planning).
 // infer-tile-layout now attaches layouts (DRAM on the func arg, L1 on the
 // gelu result); canonicalize is still a no-op stub.

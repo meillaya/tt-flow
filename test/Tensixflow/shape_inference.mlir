@@ -7,7 +7,7 @@
 
 // A realistic fused transformer flow: rmsnorm -> matmul -> gelu -> add.
 // Each op's result type is inferred; the CHECK lines assert the exact
-// inferred types (not just presence of the op).
+// inferred types rather than only the presence of the op.
 
 // CHECK-LABEL: tensixflow.func @fused_flow
 // CHECK-SAME: (%[[X:.*]]: tensor<1x2048x4096xbf16>, %[[W:.*]]: tensor<4096x12288xbf16>, %[[G:.*]]: tensor<4096xbf16>, %[[RES:.*]]: tensor<1x2048x12288xbf16>) -> tensor<1x2048x12288xbf16>

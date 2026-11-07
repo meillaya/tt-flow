@@ -1,20 +1,17 @@
 //===- NoCEstimatorTest.cpp -------------------------------------*- C++ -*-===//
 //
-// Unit tests for the TensixFlow NoC traffic estimator (todo 29). Every figure is
-// a STATIC ANALYTIC ESTIMATE computed from tensor shapes (bf16 = 2 bytes/elem) —
-// NOT a measured hardware number.
+// Unit tests for the TensixFlow NoC traffic estimator. Every figure is a static
+// analytic estimate computed from tensor shapes (bf16 = 2 bytes/elem), never a
+// measured hardware number.
 //
-//   1. FusedSavesDramReads — canonical shapes; fused.dramReadBytes < unfused.
-//   2. SavedIntermediateEqualsRmsnormOutput — saved intermediate bytes == the
-//                           rmsnorm-output tensor bytes (== activation bytes).
-//   3. MulticastPositive — a multicast weight plan yields multicastBytes > 0
-//                           (consumed from WeightPlan.multicastBytes).
-//   4. NoFusionZeroSavings — a non-fused plan reports zero fusion savings (the
-//                           required failure-path assertion).
-//   5. UserExampleMagnitudes — a GB-scale case; unfused reads several GB, fused
-//                           strictly less, both > 1 GiB, gap == saved intermediate.
-//   6. DramWritesReduced — fused.dramWriteBytes < unfused (the intermediate
-//                           write is elided).
+//   1. FusedSavesDramReads - canonical shapes; fused reads less than unfused.
+//   2. SavedIntermediateEqualsRmsnormOutput - the saved intermediate equals the
+//                           rmsnorm output tensor bytes.
+//   3. MulticastPositive - a multicast weight plan yields multicastBytes > 0.
+//   4. NoFusionZeroSavings - a non-fused plan reports zero fusion savings.
+//   5. UserExampleMagnitudes - a GB-scale case; unfused reads more than fused
+//                           and the gap equals the saved intermediate.
+//   6. DramWritesReduced - the intermediate write is elided by fusion.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,11 +20,19 @@
 #include "Model.h"
 #include "WeightPlanner.h"
 
+#include "tensixflow/Generated/DeviceSpecs.h"
+
 #include "gtest/gtest.h"
 
 using namespace mlir::tensixflow::scheduler;
 
 namespace {
+
+const mlir::tensixflow::device::DeviceSpec &n150() {
+  static const mlir::tensixflow::device::DeviceSpec *spec =
+      mlir::tensixflow::device::lookup("n150");
+  return *spec;
+}
 
 constexpr int64_t kGiB = int64_t{1} << 30; // 1073741824
 
@@ -45,8 +50,7 @@ TEST(NoCEstimatorTest, FusedSavesDramReads) {
   const int bpe = bytesPerElem("bf16");
   TensorShape activation = canonicalActivation();
   TensorShape weight = canonicalWeight();
-  plan::ShardGrid grid{8, 8};
-  WeightPlan wp = planWeight(weight, grid, bpe);
+  WeightPlan wp = planWeight(weight, n150(), bpe);
 
   NocTraffic unfused = estimateNoC(NocInputs{activation, weight, wp, false}, bpe);
   NocTraffic fused = estimateNoC(NocInputs{activation, weight, wp, true}, bpe);
@@ -63,8 +67,7 @@ TEST(NoCEstimatorTest, SavedIntermediateEqualsRmsnormOutput) {
   const int bpe = bytesPerElem("bf16");
   TensorShape activation = canonicalActivation();
   TensorShape weight = canonicalWeight();
-  plan::ShardGrid grid{8, 8};
-  WeightPlan wp = planWeight(weight, grid, bpe);
+  WeightPlan wp = planWeight(weight, n150(), bpe);
 
   NocTraffic fused = estimateNoC(NocInputs{activation, weight, wp, true}, bpe);
 
@@ -82,10 +85,9 @@ TEST(NoCEstimatorTest, MulticastPositive) {
   const int bpe = bytesPerElem("bf16");
   TensorShape activation = canonicalActivation();
   TensorShape weight = canonicalWeight();
-  plan::ShardGrid grid{8, 8};
-  WeightPlan wp = planWeight(weight, grid, bpe);
+  WeightPlan wp = planWeight(weight, n150(), bpe);
 
-  // The canonical weight is too big for L1 -> multicast (todo 27).
+  // The canonical weight is too big for L1, so the weight plan multicasts.
   ASSERT_EQ(wp.strategy, WeightStrategy::Multicast);
   ASSERT_GT(wp.multicastBytes, 0);
 
@@ -100,7 +102,7 @@ TEST(NoCEstimatorTest, MulticastPositive) {
 
   // A replicated (small) weight multicasts nothing.
   TensorShape smallWeight{"weight", {256, 256}, "bf16"};
-  WeightPlan replicated = planWeight(smallWeight, grid, bpe);
+  WeightPlan replicated = planWeight(smallWeight, n150(), bpe);
   ASSERT_EQ(replicated.strategy, WeightStrategy::Replicate);
   NocTraffic rep =
       estimateNoC(NocInputs{activation, smallWeight, replicated, true}, bpe);
@@ -111,8 +113,7 @@ TEST(NoCEstimatorTest, NoFusionZeroSavings) {
   const int bpe = bytesPerElem("bf16");
   TensorShape activation = canonicalActivation();
   TensorShape weight = canonicalWeight();
-  plan::ShardGrid grid{8, 8};
-  WeightPlan wp = planWeight(weight, grid, bpe);
+  WeightPlan wp = planWeight(weight, n150(), bpe);
 
   NocTraffic unfused = estimateNoC(NocInputs{activation, weight, wp, false}, bpe);
 
@@ -130,13 +131,12 @@ TEST(NoCEstimatorTest, NoFusionZeroSavings) {
 TEST(NoCEstimatorTest, UserExampleMagnitudes) {
   const int bpe = bytesPerElem("bf16");
   // GB-scale: batch-scaled activation [128,2048,4096] bf16 = 2 GiB exactly,
-  // canonical weight [4096,12288] bf16 = 96 MiB. Reproduces the user spec's
-  // unfused-vs-fused STYLE (unfused reads several GB, fused strictly less) —
-  // computed from shapes, NOT hardcoded 3.1/2.1 literals.
+  // canonical weight [4096,12288] bf16 = 96 MiB. The projected traffic has the
+  // fusion shape (unfused reads more than fused) and comes from the tensor
+  // shapes, not from hardcoded literals.
   TensorShape activation{"activation", {128, 2048, 4096}, "bf16"};
   TensorShape weight = canonicalWeight();
-  plan::ShardGrid grid{8, 8};
-  WeightPlan wp = planWeight(weight, grid, bpe);
+  WeightPlan wp = planWeight(weight, n150(), bpe);
 
   const int64_t actBytes = activation.bytes(bpe);
   const int64_t twoGiB = 2 * kGiB;
@@ -162,8 +162,7 @@ TEST(NoCEstimatorTest, DramWritesReduced) {
   const int bpe = bytesPerElem("bf16");
   TensorShape activation = canonicalActivation();
   TensorShape weight = canonicalWeight();
-  plan::ShardGrid grid{8, 8};
-  WeightPlan wp = planWeight(weight, grid, bpe);
+  WeightPlan wp = planWeight(weight, n150(), bpe);
 
   NocTraffic unfused = estimateNoC(NocInputs{activation, weight, wp, false}, bpe);
   NocTraffic fused = estimateNoC(NocInputs{activation, weight, wp, true}, bpe);

@@ -5,12 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The functional tile simulator (todo 39, draft D14). It EXECUTES the tile-level
+// The functional tile simulator. It EXECUTES the tile-level
 // schedule IR (the `tensixflow.sched.kernel` built by --tensixflow-lower-to-ttkernel,
-// todo 31/32) over modeled circular buffers -- it does NOT parse or execute the
+// lowering) over modeled circular buffers -- it does NOT parse or execute the
 // emitted C++ (that is compile-checked elsewhere, todos 33/37).
 //
-// THE D14 CONTRACT it enforces (shared with Rounding.h, todo 38):
+// THE ROUNDING CONTRACT it enforces (shared with Rounding.h):
 //   * each circular buffer is a bf16 buffer -- tiles pushed into a CB are rounded
 //     to bf16 (round-on-push via sim::to_bf16); CB storage is bf16, NOT fp32;
 //   * NoC read/write are modeled as memory copies (the reader rounds input tiles
@@ -20,8 +20,8 @@
 //     out CB; fused intermediates (e.g. the rmsnorm output feeding the matmul) are
 //     stored as bf16 (rounded between fused stages).
 //
-// The deliberate bf16 rounding (vs the golden's fp32-exact path, todo 40) is what
-// makes the PCC bar (todo 41) meaningful: PCC(simulator_bf16_tiled, golden_fp32)
+// The deliberate bf16 rounding (against the golden's fp32-exact path) is what
+// makes the PCC bar meaningful: PCC(simulator_bf16_tiled, golden_fp32)
 // measures the real bf16-spatial-vs-exact cost of fusion + tiled execution.
 //
 // The simulator interprets the schedule IR STRUCTURE: it walks the kernel's
@@ -47,7 +47,7 @@
 
 namespace mlir::tensixflow::sim {
 
-// The modeled Tensix tile is 32x32 (matches the lowering's kTile, todo 32).
+// The modeled Tensix tile is 32x32 (matches the lowering's kTile).
 inline constexpr int64_t kTileDim = 32;
 
 //===----------------------------------------------------------------------===//
@@ -75,7 +75,7 @@ struct Tensor {
 // wrapper). The activation [M, K] and (for a matmul) the weight [K, N] are the
 // operand tensors; gamma [K] is the per-column RMSNorm scale (empty when the kernel
 // has no rmsnorm). allocatedCBs is the set of circular-buffer indices the caller
-// (the CB allocator, todo 28) has allocated -- the simulator rejects any schedule
+// (the CB allocator) has allocated -- the simulator rejects any schedule
 // IR that references a CB outside this set (the required clear-error path).
 //===----------------------------------------------------------------------===//
 struct SimInputs {

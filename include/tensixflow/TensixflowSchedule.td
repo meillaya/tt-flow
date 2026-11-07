@@ -5,20 +5,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The tile-level schedule IR: the contract (draft D14) consumed by BOTH the
-// emitter (--lower-to-ttkernel, todo 32, which lowers a fused op + ScheduleAttr
-// INTO these ops) and the functional simulator (todo 39, which EXECUTES them).
+// The tile-level schedule IR is consumed by two components: the lowering pass
+// (--tensixflow-lower-to-ttkernel, which builds these ops) and the functional
+// simulator (tensixflow-simulate, which executes them).
 //
 // A `tensixflow.sched.kernel` holds the three tile programs of a TT-Metalium
-// style kernel -- reader / compute / writer (mirroring matmul_single_core's
-// kernel_main split) -- each a region of structured `sched.tile_loop` nests
-// staging tiles through circular buffers (CB ops), moving them over the NoC
-// (NoC ops), and computing on them (compute ops). CB indices follow the
-// tt-metal tt::CBIndex c_0..c_31 convention (default 3-CB pipeline: in0=c_0,
-// in1=c_1, out=c_16).
+// style kernel, reader / compute / writer, mirroring the kernel_main split in
+// tt-metal's matmul example. Each program is a region of structured
+// `sched.tile_loop` nests that stage tiles through circular buffers, move them
+// over the NoC, and compute on them. CB indices follow the tt-metal
+// tt::CBIndex c_0..c_31 convention; the default pipeline uses in0=c_0, in1=c_1,
+// out=c_16.
 //
-// This file defines STRUCTURE ONLY: no C++ emission (Wave 6 todo 34-36), no
-// execution (simulator, todo 39), no numerics. The simulator owns execution.
+// This file defines structure only. Emission and execution live in the emitter
+// passes and in the simulator tool.
 //
 //===----------------------------------------------------------------------===//
 

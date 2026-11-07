@@ -1,20 +1,20 @@
-"""Pytest for the TensixFlow DSL lowering driver (todo 48, draft D21 thin builder).
+"""Pytest for the TensixFlow DSL lowering driver.
 
 The gate that proves the ``@tensixflow.jit`` body works end-to-end on a CPU-only
 box: a jitted ``fused_rmsnorm_matmul(x, gamma, w)`` called with small NumPy arrays
 builds the ``tensixflow`` MLIR text from its EXPLICIT builder calls, drives the
 BUILT ``tensixflow-opt`` pipeline (the five ``--tensixflow-*`` passes) +
 ``tensixflow-translate`` for the plan JSON (with ``weight_strategy``), and triggers
-the ``tensixflow-simulate`` C++ simulator (over the reused todo-41 ``.tft`` I/O) for
+the ``tensixflow-simulate`` C++ simulator (over the reused ``.tft`` I/O) for
 a result array. It returns a :class:`LoweredResult` carrying BOTH. No device, and no
 pass reimplemented in Python (the built binaries do the work).
 
 Covers:
-  * happy path — plan JSON has ``weight_strategy`` (+ fusion / shard_grid / cb_specs)
+  * happy path: plan JSON has ``weight_strategy`` (+ fusion / shard_grid / cb_specs)
     AND a simulator result array of the right shape (bf16-representable, finite);
   * the built MLIR text is the real fused func (rmsnorm + matmul);
   * a rank-3 batched activation is flattened for the rank-2 simulator contract;
-  * failure path — an unsupported op (no builder) raises a clear ``BuilderError``;
+  * failure path: an unsupported op (no builder) raises a clear ``BuilderError``;
   * the eager fallback is preserved for non-NumPy calls (bring-up behavior).
 """
 
@@ -44,7 +44,7 @@ def _inputs(m: int = M, k: int = K, n: int = N) -> tuple[np.ndarray, np.ndarray,
 
 @tensixflow.jit
 def fused_rmsnorm_matmul(b, x, gamma, w):
-    # The jitted kernel IS the builder body (D21): explicit builder calls, no tracing.
+    # The jitted kernel IS the builder body: explicit builder calls, no tracing.
     return b.matmul(b.rmsnorm(x, gamma), w)
 
 

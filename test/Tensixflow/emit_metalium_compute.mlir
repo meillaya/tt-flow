@@ -1,52 +1,48 @@
 // RUN: tensixflow-opt --tensixflow-plan-noc-sharding --tensixflow-allocate-circular-buffers --tensixflow-lower-to-ttkernel --tensixflow-emit-metalium %s | FileCheck %s
 
-// Golden structural test for the compute.cpp emission (todo 36). The full
-// planning + lowering pipeline runs over an UNFUSED rmsnorm -> matmul pair
-// (planned as fused_rmsnorm_matmul), then --tensixflow-emit-metalium prints
-// host.cpp + compute.cpp + reader.cpp + writer.cpp to stdout, separated by
-// `// ===== file: <name>.cpp =====` delimiter banners (the pass flushes + exits
-// before mlir-opt would append the module IR, so FileCheck sees ONLY the
-// emitted artifacts). compute.cpp is emitted BETWEEN host and reader, so the
-// compute banner precedes the reader banner.
-//
-// Assert the COMPUTE tile-math sequence (matmul_init -> tile_regs_acquire ->
-// inner-K cb_wait_front -> matmul_tiles -> cb_pop_front -> tile_regs_commit ->
-// cb_reserve_back -> tile_regs_wait -> pack_tile -> tile_regs_release ->
-// cb_push_back) and, because the example is fused, the RMSNorm prologue's
-// reduce-square-sum / rsqrt / scale-by-gamma markers + the gamma-tile circular-
-// buffer staging. Assert NO data movement (noc_async_read / noc_async_write)
-// leaks into the compute kernel -- that is the reader/writer. The CHECK-NOTs
-// bracket the compute artifact's head and tail; the trailing NOT-region ends at
-// the reader banner (reader.cpp legitimately contains noc_async_read).
+// Structural test for the emitted compute kernel. The compute program is the
+// tile-math half of the pinned matmul example: matrix-engine start-up, the outer
+// product blocked matmul with fp32 destination accumulation, and the pack into
+// the output circular buffer. The old stub headers are gone, so the checks name
+// the pinned kernel API headers and intrinsics instead.
 
-// --- compute.cpp (TRISC tile math) ------------------------------------------
 // CHECK: // ===== file: compute.cpp =====
-// CHECK-NOT: noc_async_read
-// CHECK-NOT: noc_async_write
-// CHECK: matmul_init
-// CHECK: tile_regs_acquire
-// CHECK: cb_wait_front(in0_cb, 1)
-// CHECK: cb_wait_front(in1_cb, 1)
-// CHECK: RMSNorm prologue
-// CHECK: reduce square-sum
-// CHECK: rsqrt
-// CHECK: scale by gamma
-// CHECK: cb_wait_front(gamma_cb, 1)
-// CHECK: cb_pop_front(gamma_cb, 1)
-// CHECK: matmul_tiles(in0_cb, in1_cb
-// CHECK: cb_pop_front(in0_cb, 1)
-// CHECK: cb_pop_front(in1_cb, 1)
-// CHECK: tile_regs_commit
-// CHECK: cb_reserve_back(out_cb, 1)
-// CHECK: tile_regs_wait
-// CHECK: pack_tile
-// CHECK: tile_regs_release
-// CHECK: cb_push_back(out_cb, 1)
-// CHECK-NOT: noc_async_read
-// CHECK-NOT: noc_async_write
+// CHECK: #include "api/compute/compute_kernel_hw_startup.h"
+// CHECK: #include "api/compute/matmul.h"
+// CHECK: #include "api/compute/tile_move_copy.h"
+// CHECK: #include "hostdevcommon/kernel_structs.h"
+// CHECK: void kernel_main()
+// CHECK: const uint32_t Mt = get_compile_time_arg_val(0)
+// CHECK: const uint32_t Kt = get_compile_time_arg_val(1)
+// CHECK: const uint32_t Nt = get_compile_time_arg_val(2)
+// CHECK: constexpr tt::CBIndex cb_in0 = tt::CBIndex::c_0
+// CHECK: constexpr tt::CBIndex cb_in1 = tt::CBIndex::c_1
+// CHECK: constexpr tt::CBIndex cb_out = tt::CBIndex::c_16
+// CHECK: compute_kernel_hw_startup<SrcOrder::Reverse>(cb_in0, cb_in1, cb_out)
+// CHECK: matmul_init(cb_in0, cb_in1)
+// CHECK: tile_regs_acquire()
+// CHECK: cb_wait_front(cb_in0, 1)
+// CHECK: cb_wait_front(cb_in1, 1)
+// CHECK: matmul_tiles(cb_in0, cb_in1, 0, 0, 0)
+// CHECK: cb_pop_front(cb_in0, 1)
+// CHECK: cb_pop_front(cb_in1, 1)
+// CHECK: tile_regs_commit()
+// CHECK: tile_regs_wait()
+// CHECK: cb_reserve_back(cb_out, 1)
+// CHECK: pack_tile(0, cb_out)
+// CHECK: cb_push_back(cb_out, 1)
+// CHECK: tile_regs_release()
+
+// The pure matmul path emits no fused prologue or epilogue, and it uses no
+// stub headers.
+// CHECK-NOT: rmsnorm
+// CHECK-NOT: gelu
+// CHECK-NOT: compute_kernel_api.h
+// CHECK-NOT: kernel_types.hpp
+
+// The compute artifact ends before the reader delimiter.
 // CHECK: // ===== file: reader.cpp =====
-tensixflow.func @rmsnorm_matmul(%x: tensor<1x2048x4096xbf16>, %gamma: tensor<4096xbf16>, %w: tensor<4096x12288xbf16>) -> tensor<1x2048x12288xbf16> {
-  %0 = tensixflow.rmsnorm %x, %gamma : tensor<1x2048x4096xbf16>, tensor<4096xbf16> -> tensor<1x2048x4096xbf16>
-  %1 = tensixflow.matmul %0, %w : tensor<1x2048x4096xbf16> x tensor<4096x12288xbf16> -> tensor<1x2048x12288xbf16>
-  tensixflow.return %1 : tensor<1x2048x12288xbf16>
+tensixflow.func @matmul(%a: tensor<64x64xbf16>, %b: tensor<64x64xbf16>) -> tensor<64x64xbf16> {
+  %0 = tensixflow.matmul %a, %b : tensor<64x64xbf16> x tensor<64x64xbf16> -> tensor<64x64xbf16>
+  tensixflow.return %0 : tensor<64x64xbf16>
 }

@@ -1,35 +1,32 @@
 //===- NoCEstimator.h -------------------------------------------*- C++ -*-===//
 //
-// NoC traffic estimator (todo 29): a FIRST-ORDER STATIC ANALYTIC model of the
-// DRAM / L1 / NoC traffic a fused-rmsnorm+matmul plan incurs, and the savings
-// fusion delivers over the unfused op pair. These are STATIC ESTIMATES computed
-// from tensor shapes + the weight plan — they are NOT measured hardware numbers
-// and must never be reported as such (per the plan's Must-NOT).
+// NoC traffic estimator: a first-order static analytic model of the DRAM, L1,
+// and NoC traffic a fused rmsnorm+matmul plan incurs, and the savings fusion
+// delivers over the unfused op pair. Every figure is a static estimate computed
+// from tensor shapes and the weight plan; none is a measured hardware number.
 //
-// Traffic model (the modeled Wormhole n150, bf16):
-//   - UNFUSED: every op round-trips DRAM. rmsnorm reads the activation from DRAM
-//     and writes its output (the intermediate) back to DRAM; matmul re-reads
-//     that intermediate from DRAM, reads the weight from DRAM, and writes the
-//     matmul output to DRAM.
+// Traffic model (bf16 element sizes, device independent):
+//   - Unfused: every op round-trips DRAM. rmsnorm reads the activation from
+//     DRAM and writes its output (the intermediate) back to DRAM; matmul
+//     re-reads that intermediate, reads the weight, and writes the matmul
+//     output.
 //       dramReads  = activation + intermediate + weight
 //       dramWrites = intermediate + matmulOutput
-//   - FUSED: the rmsnorm-output intermediate is kept in L1 and never round-trips
-//     DRAM (arXiv:2606.09879 — fusion reduces DRAM r/w of intermediates; NoC
-//     multicast alleviates DRAM contention).
+//   - Fused: the rmsnorm-output intermediate stays in L1 and never round-trips
+//     DRAM, which is the traffic saving fusion buys.
 //       dramReads  = activation + weight
 //       dramWrites = matmulOutput
-//       l1Bytes    = intermediate (held resident in L1 across the two ops)
-//   So fusion saves exactly one intermediate DRAM write AND one intermediate
-//   DRAM re-read; savedIntermediateBytes = the rmsnorm-output tensor bytes
-//   (== activation bytes, since rmsnorm output shape == input shape).
+//       l1Bytes    = intermediate (resident in L1 across the two ops)
+//   Fusion saves exactly one intermediate DRAM write and one intermediate DRAM
+//   re-read, so savedIntermediateBytes is the rmsnorm-output tensor size (equal
+//   to the activation size because rmsnorm preserves shape).
 //
-// multicastBytes is CONSUMED from the weight plan (WeightPlan.multicastBytes,
-// todo 27) — it is NOT recomputed here; it is > 0 for the multicast strategy
-// and 0 when the weight is replicated.
+// multicastBytes comes from the weight plan verbatim, not from a second
+// calculation: it is positive for the multicast strategy and zero when the
+// weight is replicated.
 //
-// Pure data + math over the scheduler model (Model.h) — NO MLIR dependency. The
-// traffic figures reuse plan::NocEstimate (PlanSchema.h, D15); nothing is
-// redefined. The report seam is toNocEstimate (todo 30 drops it into Plan.noc).
+// Pure data and math over the scheduler model (Model.h) with no MLIR
+// dependency. The traffic figures reuse plan::NocEstimate from PlanSchema.h.
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,9 +46,9 @@ namespace scheduler {
 // Estimator inputs
 //===----------------------------------------------------------------------===//
 
-/// The plan inputs the estimator reasons about: the activation + weight tensor
-/// shapes, the weight plan (whose multicastBytes is consumed verbatim), and
-/// whether the rmsnorm+matmul pair is fused (true) or run as two unfused ops.
+/// The plan inputs the estimator reasons about: the activation and weight
+/// tensor shapes, the weight plan (whose multicastBytes is consumed verbatim),
+/// and whether the rmsnorm+matmul pair is fused or runs as two unfused ops.
 struct NocInputs {
   TensorShape activation;
   TensorShape weight;
@@ -66,21 +63,21 @@ struct NocInputs {
 /// The static traffic estimate for a plan (reusing plan::NocEstimate for the
 /// four traffic figures) plus the unfused-vs-fused savings breakdown. The saved
 /// figures are populated only for a fused plan; a non-fused plan reports zero
-/// savings (there is nothing to save without fusion).
+/// savings because there is nothing to save without fusion.
 struct NocTraffic {
   plan::NocEstimate estimate;         // dramRead/Write, l1, multicast bytes
-  int64_t savedDramReadBytes = 0;     // intermediate DRAM re-read elided by fusion
-  int64_t savedDramWriteBytes = 0;    // intermediate DRAM write elided by fusion
-  int64_t savedIntermediateBytes = 0; // intermediate bytes never round-tripping DRAM
+  int64_t savedDramReadBytes = 0;     // intermediate DRAM re-read elided
+  int64_t savedDramWriteBytes = 0;    // intermediate DRAM write elided
+  int64_t savedIntermediateBytes = 0; // intermediate never round-tripping DRAM
 };
 
 /// Estimate the NoC/DRAM/L1 traffic for a plan. See the traffic model in the
-/// header banner. `bytesPerElem` sizes every tensor (bf16 -> 2); the matmul
-/// output shape is derived as [activation leading dims] x [weight last dim].
+/// header banner. `bytesPerElem` sizes every tensor (bf16 gives 2); the matmul
+/// output shape is the activation leading dims by the weight last dim.
 NocTraffic estimateNoC(const NocInputs &inputs, int bytesPerElem);
 
-/// The report seam (todo 30): the traffic figures, already plan::NocEstimate,
-/// ready to drop into Plan.noc.
+/// The report seam: the traffic figures, already plan::NocEstimate, ready to
+/// drop into plan::Plan.noc.
 plan::NocEstimate toNocEstimate(const NocTraffic &traffic);
 
 } // namespace scheduler
