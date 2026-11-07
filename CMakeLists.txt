@@ -13,22 +13,25 @@ include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
 
-# REQUIRED shim (see .omo/notepads/tensixflow/learnings.md): nixpkgs MLIRConfig ships
-# MLIR_TABLEGEN_EXE as a bare name and shadows -DMLIR_TABLEGEN_EXE; LLVM TableGen.cmake
-# needs it as a CMake TARGET. unset() first: MLIRConfig.cmake:13 sets it as a NORMAL
-# variable, which would short-circuit find_program and leave IMPORTED_LOCATION bare;
-# unset forces a real PATH search so the imported target gets an absolute location.
+# nixpkgs MLIRConfig ships MLIR_TABLEGEN_EXE as a bare executable name, which
+# shadows -DMLIR_TABLEGEN_EXE and leaves LLVM's TableGen.cmake with an imported
+# target whose location is not absolute. Clearing the variable first forces a
+# real PATH search so the imported target points at the pinned mlir-tblgen.
 unset(MLIR_TABLEGEN_EXE)
 find_program(MLIR_TABLEGEN_EXE mlir-tblgen REQUIRED)
 add_executable(mlir-tblgen IMPORTED GLOBAL)
 set_target_properties(mlir-tblgen PROPERTIES IMPORTED_LOCATION "${MLIR_TABLEGEN_EXE}")
 
-option(TENSIXFLOW_ENABLE_RUNTIME_STUBS "Generate compile-only stub tt-metal headers for codegen checks" ON)
+# nixpkgs LLVMConfig.cmake points LLVM_EXTERNAL_LIT at a binary that the package
+# does not install. The devenv shell exports the working Python entry point, so
+# prefer the environment value over the packaged default.
+if(DEFINED ENV{LLVM_EXTERNAL_LIT})
+  set(LLVM_EXTERNAL_LIT "$ENV{LLVM_EXTERNAL_LIT}" CACHE FILEPATH "Path to the lit entry point" FORCE)
+endif()
 
-# Mirror mlir/examples/standalone: LLVM/MLIR include dirs (tablegen reads the
-# directory INCLUDE_DIRECTORIES property to build its -I flags, so these are
-# required for mlir-tblgen to find mlir/IR/OpBase.td), plus the project include
-# dir so #include "tensixflow/..." resolves in both C++ and tablegen.
+# Mirror mlir/examples/standalone. Tablegen reads the directory
+# INCLUDE_DIRECTORIES property to build its include flags, so the LLVM and MLIR
+# include dirs are required in addition to the project's own headers.
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
@@ -42,21 +45,18 @@ add_subdirectory(tools/tensixflow-translate)
 add_subdirectory(tools/tensixflow-simulate)
 add_subdirectory(tools/tensixflow-report)
 
-# Simple benchmark timing loops + the report-regeneration target (todo 44, D21).
-# Must come after tools/ so the tensixflow-report target the regenerate target
-# DEPENDS on already exists.
+# Benchmarks and the report-regeneration target. These come after tools/ so the
+# targets they depend on exist.
 add_subdirectory(benchmarks)
 
-# lit/FileCheck regression suite (defines the check-tensixflow target). Must come
-# after tools/ so the tensixflow-opt target it DEPENDS on already exists.
+# lit/FileCheck suite. Defines check-tensixflow; after tools/ for the same reason.
 add_subdirectory(test)
 
-# C++ unit-test suite (GoogleTest + ctest). Separate from the lit suite above;
-# requires the MLIRTensixflowSchema lib from lib/tensixflow. enable_testing()
-# registers the add_test() entries with ctest (e.g. `ctest -R plan_schema`).
+# GoogleTest suites registered with ctest.
 enable_testing()
 add_subdirectory(test/unit)
 
-# Compile-only structural check of TT-Metalium kernels against signature-only
-# stub headers (defines the check-generated-kernels-compile target; todo 33/D16).
+# Emitted-project checks against the pinned tt-metal release. The target prints
+# the fetch command and skips explicitly when .deps is absent; it never passes
+# without compiling.
 add_subdirectory(kernels)

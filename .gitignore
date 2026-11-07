@@ -1,7 +1,4 @@
-# Agent working state
-.omo/
-
-# Spike / scratch artifacts — never committed
+# Spike and scratch artifacts are never committed
 _spike/
 
 # Build outputs
@@ -16,3 +13,11 @@ result
 __pycache__/
 *.pyc
 *.egg-info/
+
+# Fetched upstream release artifacts and tool caches
+.deps/
+*.deb
+*.whl
+
+# Baseline and generated build trees
+build-*/
