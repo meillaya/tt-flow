@@ -6,11 +6,13 @@
 # Run through devenv:
 #
 #   devenv shell -- bash scripts/build_generated.sh
+#   devenv shell -- bash scripts/build_generated.sh <input.mlir>
 #   devenv shell -- bash scripts/build_generated.sh <existing-project-dir>
 #
 # With no argument the script emits a fresh project into
-# build-generated/project/ from examples/matmul.mlir and builds that. With an
-# argument it builds an already-emitted project directory.
+# build-generated/project/ from examples/matmul.mlir. A .mlir argument emits a
+# fresh project into build-generated/<input-stem>/ and builds that; a directory
+# argument builds an already-emitted project.
 #
 # The pinned artifacts must be present in .deps/ (scripts/fetch_tt_metal.sh).
 # When they are absent the script prints the fetch command and exits 0 with an
@@ -41,11 +43,22 @@ if [ -z "${TT_METAL_SYSTEM_LINK_FLAGS:-}" ]; then
     fail "TT_METAL_SYSTEM_LINK_FLAGS is unset; run inside 'devenv shell' so devenv.nix provides the TT-Metalium link dependencies"
 fi
 
+# Argument forms: no argument emits from examples/matmul.mlir into
+# build-generated/project; a .mlir argument emits that file into
+# build-generated/<stem>; anything else is treated as an emitted project
+# directory.
 project_dir="$default_project"
 emit_fresh=1
+input_mlir=""
 if [ "$#" -ge 1 ]; then
-    project_dir="$1"
-    emit_fresh=0
+    if [ -f "$1" ] && [[ "$1" == *.mlir ]]; then
+        input_mlir="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+        input_stem="$(basename "$input_mlir" .mlir)"
+        project_dir="$repo_root/build-generated/$input_stem"
+    else
+        project_dir="$1"
+        emit_fresh=0
+    fi
 fi
 
 # The host program is built by the compiler's own emitter, so the emitter has to
@@ -98,7 +111,9 @@ find_input() {
 
 if [ "$emit_fresh" -eq 1 ]; then
     opt="$(find_opt)" || fail "tensixflow-opt not found; build the compiler first with: devenv shell -- bash scripts/build.sh"
-    input_mlir="$(find_input)"
+    if [ -z "$input_mlir" ]; then
+        input_mlir="$(find_input)"
+    fi
     echo "== emit =="
     echo "  $opt --tensixflow-device=n150 --tensixflow-plan-noc-sharding \\"
     echo "      --tensixflow-allocate-circular-buffers --tensixflow-lower-to-ttkernel \\"

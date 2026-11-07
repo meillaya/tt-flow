@@ -7,10 +7,12 @@
 //
 // The host.cpp emitter. See include/tensixflow/Codegen/EmitHost.h for the
 // contract. The emitted program follows the pinned tt-metal v0.82.0-rc2
-// programming_examples/matmul/matmul_single_core structure for one core: a
-// unit mesh device, a mesh command queue, replicated DRAM buffers, a circular
-// buffer pipeline, one reader / compute / writer kernel created with the single
-// CreateKernel entry point, and the distributed::Enqueue* mesh calls.
+// programming_examples/matmul/matmul_multi_core structure: a unit mesh device,
+// a mesh command queue, replicated DRAM buffers, a circular buffer pipeline on
+// the plan's core grid, one reader / compute / writer kernel created with the
+// single CreateKernel entry point, and the distributed::Enqueue* mesh calls.
+// The output tiles are split over the grid with split_work_to_cores, and each
+// core receives its contiguous output-tile range as runtime arguments.
 //
 // The program is self-checking: deterministic inputs, a CPU reference matmul in
 // fp32 with bf16 rounding, the device matmul, and a PCC print. The geometry
@@ -32,6 +34,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 
 namespace mlir {
@@ -39,10 +42,9 @@ namespace tensixflow {
 
 namespace {
 
-// The number of hardware tiles a single-core matmul program is allowed to
-// stream. The emitter targets the pinned example structure, which reads whole
-// matrices; the bound is only used to keep a pathological plan from emitting a
-// host program that would never finish under the simulator.
+// The tile count per dimension the emitter accepts. The bound keeps a
+// pathological plan from emitting a program that would never finish under the
+// simulator; real plans are far below it.
 inline constexpr int64_t kMaxTilesPerDimension = 1024;
 
 void emitHostPrologue(TensixflowSchedKernelOp kernel,
@@ -57,9 +59,10 @@ void emitHostPrologue(TensixflowSchedKernelOp kernel,
      << schedule.getActivationSharding().getValue() << ", weight strategy "
      << schedule.getWeightStrategy().getValue() << ", planned grid "
      << schedule.getGridY() << "x" << schedule.getGridX() << "\n";
-  os << "// Emitted: one-core matmul on core {0, 0}. Output tiles "
-     << shape.mTiles() << " x " << shape.nTiles() << ", reduction tiles "
-     << shape.kTiles() << ".\n";
+  os << "// Emitted: multi-core matmul on the plan's " << schedule.getGridY()
+     << " x " << schedule.getGridX() << " grid. Output tiles " << shape.mTiles()
+     << " x " << shape.nTiles() << ", reduction tiles " << shape.kTiles()
+     << ".\n";
   os << "// Shapes are rounded up to whole 32x32 tiles: M " << shape.m << " -> "
      << shape.mPadded() << ", N " << shape.n << " -> " << shape.nPadded()
      << ", K " << shape.k << " -> " << shape.kPadded() << ".\n";
@@ -74,8 +77,8 @@ void emitHostPrologue(TensixflowSchedKernelOp kernel,
   os << "//===----------------------------------------------------------------------===//\n\n";
 }
 
-void emitHostConstants(const MatmulShape &shape,
-                       const llvm::SmallVector<CbSlot> &slots,
+void emitHostConstants(const MatmulShape &shape, uint32_t gridY,
+                       uint32_t gridX, const llvm::SmallVector<CbSlot> &slots,
                        llvm::raw_ostream &os) {
   const CbSlot &in0 = slots[0];
   const CbSlot &in1 = slots[1];
@@ -89,6 +92,11 @@ void emitHostConstants(const MatmulShape &shape,
   os << "constexpr uint32_t kM = kOutputRowTiles * TILE_HEIGHT;\n";
   os << "constexpr uint32_t kN = kOutputColTiles * TILE_WIDTH;\n";
   os << "constexpr uint32_t kK = kReductionTiles * TILE_WIDTH;\n\n";
+
+  os << "// Plan core grid the emitted kernels are created on.\n";
+  os << "constexpr uint32_t kGridY = " << gridY << ";\n";
+  os << "constexpr uint32_t kGridX = " << gridX << ";\n";
+  os << "constexpr uint32_t kOutputTileCount = kOutputRowTiles * kOutputColTiles;\n\n";
 
   os << "// Circular-buffer plan: index and depth per buffer (tiles).\n";
   os << "constexpr uint32_t kCbIn0 = " << in0.index << ";\n";
@@ -111,7 +119,7 @@ void emitHostConstants(const MatmulShape &shape,
 void emitHostReference(llvm::raw_ostream &os) {
   os << "namespace {\n\n";
   os << "// CPU reference matmul: row-major, fp32 accumulate, bf16 round on store.\n";
-  os << "// Mirrors the golden_matmul of the pinned single-core matmul example.\n";
+  os << "// Mirrors the golden_matmul of the pinned matmul examples.\n";
   os << "void goldenMatmul(const std::vector<bfloat16>& a,\n";
   os << "                  const std::vector<bfloat16>& b,\n";
   os << "                  std::vector<bfloat16>& output) {\n";
@@ -164,7 +172,7 @@ void emitHostReference(llvm::raw_ostream &os) {
 
 void emitHostMatmulFunction(llvm::raw_ostream &os) {
   os << "namespace {\n\n";
-  os << "// Build and enqueue the matmul program on one core.\n";
+  os << "// Build and enqueue the matmul program across the plan's core grid.\n";
   os << "void runMatmul(const std::shared_ptr<distributed::MeshDevice>& meshDevice,\n";
   os << "               const std::vector<bfloat16>& activation,\n";
   os << "               const std::vector<bfloat16>& weight,\n";
@@ -174,10 +182,15 @@ void emitHostMatmulFunction(llvm::raw_ostream &os) {
   os << "  distributed::MeshCoordinateRange deviceRange =\n";
   os << "      distributed::MeshCoordinateRange(meshDevice->shape());\n";
   os << "  Program program = CreateProgram(*meshDevice);\n\n";
-  os << "  // The emitted project uses the pinned example's one-core structure. The\n";
-  os << "  // plan's grid stays an analysis decision; realizing it needs per-core\n";
-  os << "  // output-tile windows, which this emitter does not generate yet.\n";
-  os << "  const CoreCoord core{0, 0};\n\n";
+
+  os << "  // The plan grid is the core range every kernel runs on. The output tiles\n";
+  os << "  // are split over that range with the pinned work_split helper, so each core\n";
+  os << "  // owns a contiguous range of linear output-tile ids.\n";
+  os << "  const CoreCoord coreGrid{kGridX, kGridY};\n";
+  os << "  auto [numCores, allCores, coreGroup1, coreGroup2, workPerCore1,\n";
+  os << "        workPerCore2] =\n";
+  os << "      split_work_to_cores(coreGrid, kOutputTileCount);\n";
+  os << "  (void)numCores;\n\n";
 
   os << "  // Replicated DRAM buffers for the two inputs and the output. The page\n";
   os << "  // size equals the tile size so the kernels can address whole tiles.\n";
@@ -193,21 +206,21 @@ void emitHostMatmulFunction(llvm::raw_ostream &os) {
   os << "      distributed::ReplicatedBufferConfig{.size = sizeof(bfloat16) * output.size()},\n";
   os << "      dramConfig, meshDevice.get());\n\n";
 
-  os << "  // Circular buffers keyed by the plan's tt::CBIndex values. bf16 tiles\n";
-  os << "  // match the DRAM page size, so the NoC moves whole tiles.\n";
+  os << "  // Circular buffers on every core of the range, keyed by the plan's\n";
+  os << "  // tt::CBIndex values. bf16 tiles match the DRAM page size.\n";
   os << "  constexpr tt::DataFormat kCbDataFormat = tt::DataFormat::Float16_b;\n";
   os << "  const CircularBufferConfig in0Config =\n";
   os << "      CircularBufferConfig(kCbIn0Tiles * kTileBytes, {{kCbIn0, kCbDataFormat}})\n";
   os << "          .set_page_size(kCbIn0, kTileBytes);\n";
-  os << "  tt_metal::CreateCircularBuffer(program, core, in0Config);\n";
+  os << "  tt_metal::CreateCircularBuffer(program, allCores, in0Config);\n";
   os << "  const CircularBufferConfig in1Config =\n";
   os << "      CircularBufferConfig(kCbIn1Tiles * kTileBytes, {{kCbIn1, kCbDataFormat}})\n";
   os << "          .set_page_size(kCbIn1, kTileBytes);\n";
-  os << "  tt_metal::CreateCircularBuffer(program, core, in1Config);\n";
+  os << "  tt_metal::CreateCircularBuffer(program, allCores, in1Config);\n";
   os << "  const CircularBufferConfig outConfig =\n";
   os << "      CircularBufferConfig(kCbOutTiles * kTileBytes, {{kCbOut, kCbDataFormat}})\n";
   os << "          .set_page_size(kCbOut, kTileBytes);\n";
-  os << "  tt_metal::CreateCircularBuffer(program, core, outConfig);\n\n";
+  os << "  tt_metal::CreateCircularBuffer(program, allCores, outConfig);\n\n";
 
   os << "  // Reader compile-time args: one TensorAccessorArgs per DRAM buffer the\n";
   os << "  // kernel addresses. The accessors are appended in kernel argument order.\n";
@@ -215,7 +228,7 @@ void emitHostMatmulFunction(llvm::raw_ostream &os) {
   os << "  TensorAccessorArgs(*activationBuffer).append_to(readerCompileTimeArgs);\n";
   os << "  TensorAccessorArgs(*weightBuffer).append_to(readerCompileTimeArgs);\n";
   os << "  const KernelHandle readerKernel = tt_metal::CreateKernel(\n";
-  os << "      program, \"kernels/reader.cpp\", core,\n";
+  os << "      program, \"kernels/reader.cpp\", allCores,\n";
   os << "      tt_metal::DataMovementConfig{\n";
   os << "          .processor = DataMovementProcessor::RISCV_1,\n";
   os << "          .noc = NOC::RISCV_1_default,\n";
@@ -225,7 +238,7 @@ void emitHostMatmulFunction(llvm::raw_ostream &os) {
   os << "  std::vector<uint32_t> writerCompileTimeArgs;\n";
   os << "  TensorAccessorArgs(*outputBuffer).append_to(writerCompileTimeArgs);\n";
   os << "  const KernelHandle writerKernel = tt_metal::CreateKernel(\n";
-  os << "      program, \"kernels/writer.cpp\", core,\n";
+  os << "      program, \"kernels/writer.cpp\", allCores,\n";
   os << "      tt_metal::DataMovementConfig{\n";
   os << "          .processor = DataMovementProcessor::RISCV_0,\n";
   os << "          .noc = NOC::RISCV_0_default,\n";
@@ -234,21 +247,35 @@ void emitHostMatmulFunction(llvm::raw_ostream &os) {
   os << "  // Compute kernel: HiFi4 bf16 matmul with fp32 destination accumulate.\n";
   os << "  const tt_metal::ComputeConfig computeConfig{\n";
   os << "      .math_fidelity = MathFidelity::HiFi4,\n";
-  os << "      .compile_args = {kOutputRowTiles, kReductionTiles, kOutputColTiles}};\n";
-  os << "  tt_metal::CreateKernel(\n";
-  os << "      program, \"kernels/compute.cpp\", core, computeConfig);\n\n";
+  os << "      .compile_args = {}};\n";
+  os << "  const KernelHandle computeKernel = tt_metal::CreateKernel(\n";
+  os << "      program, \"kernels/compute.cpp\", allCores, computeConfig);\n\n";
 
-  os << "  // Runtime args: buffer addresses plus the tile decomposition. The reader\n";
-  os << "  // needs (M, K, N) tiles to walk the inputs in the kernel's order; the\n";
-  os << "  // writer needs (M, N) to place each output tile.\n";
+  os << "  // Per-core runtime args: the tile decomposition, plus the contiguous\n";
+  os << "  // output-tile range this core owns. The reader walks the range and reads\n";
+  os << "  // each output tile's A and B tiles; the compute kernel produces one output\n";
+  os << "  // tile per iteration; the writer stores tile startTile + i.\n";
   os << "  const uint32_t activationAddress = activationBuffer->address();\n";
   os << "  const uint32_t weightAddress = weightBuffer->address();\n";
   os << "  const uint32_t outputAddress = outputBuffer->address();\n";
-  os << "  tt_metal::SetRuntimeArgs(program, readerKernel, core,\n";
-  os << "                           {activationAddress, weightAddress, kOutputRowTiles,\n";
-  os << "                            kReductionTiles, kOutputColTiles});\n";
-  os << "  tt_metal::SetRuntimeArgs(program, writerKernel, core,\n";
-  os << "                           {outputAddress, kOutputRowTiles, kOutputColTiles});\n\n";
+  os << "  uint32_t workOffset = 0;\n";
+  os << "  const auto workGroups = {std::make_pair(coreGroup1, workPerCore1),\n";
+  os << "                           std::make_pair(coreGroup2, workPerCore2)};\n";
+  os << "  for (const auto& [ranges, workPerCore] : workGroups) {\n";
+  os << "    for (const auto& range : ranges.ranges()) {\n";
+  os << "      for (const auto& core : range) {\n";
+  os << "        tt_metal::SetRuntimeArgs(\n";
+  os << "            program, readerKernel, core,\n";
+  os << "            {activationAddress, weightAddress, kOutputRowTiles,\n";
+  os << "             kReductionTiles, kOutputColTiles, workOffset, workPerCore});\n";
+  os << "        tt_metal::SetRuntimeArgs(program, writerKernel, core,\n";
+  os << "                                 {outputAddress, workPerCore, workOffset});\n";
+  os << "        tt_metal::SetRuntimeArgs(program, computeKernel, core,\n";
+  os << "                                 {workPerCore, kReductionTiles});\n";
+  os << "        workOffset += workPerCore;\n";
+  os << "      }\n";
+  os << "    }\n";
+  os << "  }\n\n";
 
   os << "  // Upload the tiled inputs, enqueue the workload, read the tiled output.\n";
   os << "  distributed::EnqueueWriteMeshBuffer(cq, activationBuffer, activation, false);\n";
@@ -311,6 +338,404 @@ void emitHostMain(llvm::raw_ostream &os) {
   os << "}\n";
 }
 
+// Emit the fused RMSNorm + MatMul host program. The structure matches the
+// matmul host: the plan grid, split_work_to_cores, replicated DRAM buffers, and
+// one reader / compute / writer kernel. The inputs gain the gamma tiles and the
+// reduce scaler tile, the golden reference runs RMSNorm before the matmul, and
+// the compute kernel is configured for FP32 destination accumulation.
+void emitFusedHost(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
+                   const MatmulShape &shape, llvm::raw_ostream &os) {
+  llvm::SmallVector<CbSlot> slots = readCbSlots(schedule);
+  const CbSlot &act = slots[kFusedActivationSlot];
+  const CbSlot &weight = slots[kFusedWeightSlot];
+  const CbSlot &gamma = slots[kFusedGammaSlot];
+  const CbSlot &scaler = slots[kFusedScalerSlot];
+  const CbSlot &norm = slots[kFusedNormalizedSlot];
+  const CbSlot &out = slots[kFusedOutputSlot];
+
+  FloatAttr epsilonAttr = fusedEpsilon(kernel);
+  const double epsilon =
+      epsilonAttr ? epsilonAttr.getValueAsDouble() : 1.0e-6;
+  char epsilonText[64];
+  std::snprintf(epsilonText, sizeof(epsilonText), "%.9e", epsilon);
+
+  os << "//===- host.cpp - TensixFlow-generated fused RMSNorm + MatMul host ";
+  os << "program -------===//\n";
+  os << "//\n";
+  os << "// Auto-generated by tensixflow-opt --tensixflow-emit-metalium. Do not edit.\n";
+  os << "//\n";
+  os << "// Kernel: @" << kernel.getSymName() << "\n";
+  os << "// Plan: fusion " << fusionKind(schedule) << ", activation sharding "
+     << schedule.getActivationSharding().getValue() << ", weight strategy "
+     << schedule.getWeightStrategy().getValue() << ", grid "
+     << schedule.getGridY() << "x" << schedule.getGridX() << "\n";
+  os << "// Emitted: fused RMSNorm + MatMul on the plan's core grid. Output tiles "
+     << shape.mTiles() << " x " << shape.nTiles() << ", reduction tiles "
+     << shape.kTiles() << ".\n";
+  os << "// The activation rows of each core's output tiles are staged once in\n";
+  os << "// L1, normalized there, and consumed by the matmul from L1. The\n";
+  os << "// normalized intermediate never reaches DRAM.\n";
+  os << "//\n";
+  os << "// Shapes are rounded up to whole 32x32 tiles: M " << shape.m << " -> "
+     << shape.mPadded() << ", N " << shape.n << " -> " << shape.nPadded()
+     << ", K " << shape.k << " -> " << shape.kPadded() << ".\n";
+  os << "//\n";
+  os << "// Build from the project directory:\n";
+  os << "//   cmake -G Ninja -S . -B build && cmake --build build\n";
+  os << "// Run (the kernel source paths resolve relative to this directory):\n";
+  os << "//   ./build/tensixflow_generated\n";
+  os << "// The scripts/build_generated.sh and scripts/run_generated.sh wrappers\n";
+  os << "// supply the pinned TT-Metalium prefix and the ttsim environment.\n";
+  os << "//\n";
+  os << "//===----------------------------------------------------------------------===//\n\n";
+
+  os << "#include <algorithm>\n";
+  os << "#include <cmath>\n";
+  os << "#include <cstddef>\n";
+  os << "#include <cstdint>\n";
+  os << "#include <cstdio>\n";
+  os << "#include <exception>\n";
+  os << "#include <memory>\n";
+  os << "#include <random>\n";
+  os << "#include <utility>\n";
+  os << "#include <vector>\n\n";
+  os << "#include <tt-metalium/bfloat16.hpp>\n";
+  os << "#include <tt-metalium/constants.hpp>\n";
+  os << "#include <tt-metalium/core_coord.hpp>\n";
+  os << "#include <tt-metalium/device.hpp>\n";
+  os << "#include <tt-metalium/distributed.hpp>\n";
+  os << "#include <tt-metalium/host_api.hpp>\n";
+  os << "#include <tt-metalium/tensor_accessor_args.hpp>\n";
+  os << "#include <tt-metalium/tilize_utils.hpp>\n";
+  os << "#include <tt-metalium/work_split.hpp>\n\n";
+  os << "using namespace tt;\n";
+  os << "using namespace tt::tt_metal;\n";
+  os << "using namespace tt::constants;\n\n";
+
+  os << "namespace {\n\n";
+  os << "// Plan geometry, rounded up to whole tiles.\n";
+  os << "constexpr uint32_t kOutputRowTiles = " << shape.mTiles() << ";\n";
+  os << "constexpr uint32_t kOutputColTiles = " << shape.nTiles() << ";\n";
+  os << "constexpr uint32_t kReductionTiles = " << shape.kTiles() << ";\n";
+  os << "constexpr uint32_t kM = kOutputRowTiles * TILE_HEIGHT;\n";
+  os << "constexpr uint32_t kN = kOutputColTiles * TILE_WIDTH;\n";
+  os << "constexpr uint32_t kK = kReductionTiles * TILE_WIDTH;\n\n";
+  os << "// Plan core grid the emitted kernels are created on.\n";
+  os << "constexpr uint32_t kGridY = " << schedule.getGridY() << ";\n";
+  os << "constexpr uint32_t kGridX = " << schedule.getGridX() << ";\n";
+  os << "constexpr uint32_t kOutputTileCount = kOutputRowTiles * kOutputColTiles;\n\n";
+  os << "// Fused circular-buffer plan: activation stage, weight, gamma, scaler,\n";
+  os << "// normalized activation, output.\n";
+  os << "constexpr uint32_t kCbAct = " << act.index << ";\n";
+  os << "constexpr uint32_t kCbWeight = " << weight.index << ";\n";
+  os << "constexpr uint32_t kCbGamma = " << gamma.index << ";\n";
+  os << "constexpr uint32_t kCbScaler = " << scaler.index << ";\n";
+  os << "constexpr uint32_t kCbNorm = " << norm.index << ";\n";
+  os << "constexpr uint32_t kCbOut = " << out.index << ";\n";
+  os << "constexpr uint32_t kCbActTiles = " << act.depth << ";\n";
+  os << "constexpr uint32_t kCbWeightTiles = " << weight.depth << ";\n";
+  os << "constexpr uint32_t kCbGammaTiles = " << gamma.depth << ";\n";
+  os << "constexpr uint32_t kCbScalerTiles = " << scaler.depth << ";\n";
+  os << "constexpr uint32_t kCbNormTiles = " << norm.depth << ";\n";
+  os << "constexpr uint32_t kCbOutTiles = " << out.depth << ";\n";
+  os << "constexpr uint32_t kTileBytes = sizeof(bfloat16) * TILE_HEIGHT * TILE_WIDTH;\n\n";
+  os << "// Run identity and self-check parameters.\n";
+  os << "constexpr int kDeviceId = 0;\n";
+  os << "constexpr uint32_t kRandomSeed = 42;\n";
+  os << "constexpr float kInputLow = 0.0f;\n";
+  os << "constexpr float kInputHigh = 1.0f;\n";
+  os << "constexpr float kGammaLow = 0.5f;\n";
+  os << "constexpr float kGammaHigh = 1.5f;\n";
+  os << "constexpr float kEpsilon = " << epsilonText << "f;\n";
+  os << "constexpr float kPccThreshold = 0.97f;\n\n";
+  os << "}  // namespace\n\n";
+
+  os << "namespace {\n\n";
+  os << "// L1 tile layout is four 16x16 faces in row-major order, not one\n";
+  os << "// row-major 32x32 block. Host-built constant tiles use the same\n";
+  os << "// addressing the tensix kernels use.\n";
+  os << "std::size_t tileElement(uint32_t row, uint32_t col) {\n";
+  os << "  const std::size_t face =\n";
+  os << "      static_cast<std::size_t>(row / FACE_HEIGHT) * 2 + col / FACE_WIDTH;\n";
+  os << "  return face * FACE_HEIGHT * FACE_WIDTH +\n";
+  os << "         static_cast<std::size_t>(row % FACE_HEIGHT) * FACE_WIDTH +\n";
+  os << "         col % FACE_WIDTH;\n";
+  os << "}\n\n";
+  os << "// Pack gamma into one tile per K block. Every row of a tile holds the\n";
+  os << "// same 32-wide gamma row, so the compute kernel multiplies by gamma\n";
+  os << "// with an elementwise dest-reuse multiply.\n";
+  os << "std::vector<bfloat16> packGammaTiles(const std::vector<float>& values) {\n";
+  os << "  std::vector<bfloat16> tiles(kCbGammaTiles * TILE_HEIGHT * TILE_WIDTH);\n";
+  os << "  for (uint32_t kt = 0; kt < kCbGammaTiles; ++kt) {\n";
+  os << "    const uint32_t tileBase = kt * TILE_HEIGHT * TILE_WIDTH;\n";
+  os << "    for (uint32_t row = 0; row < TILE_HEIGHT; ++row) {\n";
+  os << "      for (uint32_t col = 0; col < TILE_WIDTH; ++col) {\n";
+  os << "        tiles[tileBase + tileElement(row, col)] =\n";
+  os << "            bfloat16(values[kt * TILE_WIDTH + col]);\n";
+  os << "      }\n";
+  os << "    }\n";
+  os << "  }\n";
+  os << "  return tiles;\n";
+  os << "}\n\n";
+  os << "// Build the reduce scaler tile: ones on the first row of every 16x16\n";
+  os << "// face and zeros elsewhere. The compute kernel applies 1/K itself.\n";
+  os << "std::vector<bfloat16> packScalerTile() {\n";
+  os << "  std::vector<bfloat16> tile(TILE_HEIGHT * TILE_WIDTH, bfloat16(0.0f));\n";
+  os << "  for (uint32_t face = 0; face < 4; ++face) {\n";
+  os << "    const uint32_t faceBase = face * FACE_HEIGHT * FACE_WIDTH;\n";
+  os << "    for (uint32_t col = 0; col < FACE_WIDTH; ++col) {\n";
+  os << "      tile[faceBase + col] = bfloat16(1.0f);\n";
+  os << "    }\n";
+  os << "  }\n";
+  os << "  return tile;\n";
+  os << "}\n\n";
+  os << "// CPU golden: RMSNorm with fp32 math and a bf16 round of the normalized\n";
+  os << "// intermediate, then a matmul with fp32 accumulation and a bf16 output.\n";
+  os << "void goldenRmsnorm(const std::vector<bfloat16>& activation,\n";
+  os << "                   const std::vector<float>& gamma,\n";
+  os << "                   std::vector<bfloat16>& normalized) {\n";
+  os << "  std::vector<float> values(kM * kK);\n";
+  os << "  for (uint32_t row = 0; row < kM; ++row) {\n";
+  os << "    float sumSquares = 0.0f;\n";
+  os << "    for (uint32_t col = 0; col < kK; ++col) {\n";
+  os << "      const float value = static_cast<float>(activation[row * kK + col]);\n";
+  os << "      sumSquares += value * value;\n";
+  os << "    }\n";
+  os << "    const float rms =\n";
+  os << "        1.0f / std::sqrt(sumSquares / static_cast<float>(kK) + kEpsilon);\n";
+  os << "    for (uint32_t col = 0; col < kK; ++col) {\n";
+  os << "      const float value = static_cast<float>(activation[row * kK + col]);\n";
+  os << "      values[row * kK + col] =\n";
+  os << "          static_cast<float>(bfloat16(value * rms * gamma[col]));\n";
+  os << "    }\n";
+  os << "  }\n";
+  os << "  normalized.assign(values.begin(), values.end());\n";
+  os << "}\n\n";
+  os << "void goldenMatmul(const std::vector<bfloat16>& a,\n";
+  os << "                  const std::vector<bfloat16>& b,\n";
+  os << "                  std::vector<bfloat16>& output) {\n";
+  os << "  for (uint32_t i = 0; i < kM; ++i) {\n";
+  os << "    for (uint32_t j = 0; j < kN; ++j) {\n";
+  os << "      float sum = 0.0f;\n";
+  os << "      for (uint32_t kk = 0; kk < kK; ++kk) {\n";
+  os << "        sum += static_cast<float>(a[i * kK + kk]) *\n";
+  os << "               static_cast<float>(b[kk * kN + j]);\n";
+  os << "      }\n";
+  os << "      output[i * kN + j] = bfloat16(sum);\n";
+  os << "    }\n";
+  os << "  }\n";
+  os << "}\n\n";
+  os << "// Pearson correlation coefficient between two equally sized bf16 vectors.\n";
+  os << "float pearsonCorrelation(const std::vector<bfloat16>& a,\n";
+  os << "                         const std::vector<bfloat16>& b) {\n";
+  os << "  const double n = static_cast<double>(a.size());\n";
+  os << "  if (a.size() != b.size() || a.empty()) {\n";
+  os << "    return 0.0f;\n";
+  os << "  }\n";
+  os << "  double sumA = 0.0;\n";
+  os << "  double sumB = 0.0;\n";
+  os << "  for (std::size_t i = 0; i < a.size(); ++i) {\n";
+  os << "    sumA += static_cast<float>(a[i]);\n";
+  os << "    sumB += static_cast<float>(b[i]);\n";
+  os << "  }\n";
+  os << "  const double meanA = sumA / n;\n";
+  os << "  const double meanB = sumB / n;\n";
+  os << "  double covariance = 0.0;\n";
+  os << "  double varianceA = 0.0;\n";
+  os << "  double varianceB = 0.0;\n";
+  os << "  for (std::size_t i = 0; i < a.size(); ++i) {\n";
+  os << "    const double da = static_cast<float>(a[i]) - meanA;\n";
+  os << "    const double db = static_cast<float>(b[i]) - meanB;\n";
+  os << "    covariance += da * db;\n";
+  os << "    varianceA += da * da;\n";
+  os << "    varianceB += db * db;\n";
+  os << "  }\n";
+  os << "  const double denominator = std::sqrt(varianceA * varianceB);\n";
+  os << "  if (denominator == 0.0) {\n";
+  os << "    return 0.0f;\n";
+  os << "  }\n";
+  os << "  return static_cast<float>(covariance / denominator);\n";
+  os << "}\n\n";
+  os << "}  // namespace\n\n";
+
+  os << "namespace {\n\n";
+  os << "// Build and enqueue the fused program across the plan's core grid.\n";
+  os << "void runFused(const std::shared_ptr<distributed::MeshDevice>& meshDevice,\n";
+  os << "              const std::vector<bfloat16>& activation,\n";
+  os << "              const std::vector<bfloat16>& weight,\n";
+  os << "              const std::vector<bfloat16>& gammaTiles,\n";
+  os << "              const std::vector<bfloat16>& scalerTiles,\n";
+  os << "              std::vector<bfloat16>& output) {\n";
+  os << "  distributed::MeshCommandQueue& cq = meshDevice->mesh_command_queue();\n";
+  os << "  distributed::MeshWorkload workload;\n";
+  os << "  distributed::MeshCoordinateRange deviceRange =\n";
+  os << "      distributed::MeshCoordinateRange(meshDevice->shape());\n";
+  os << "  Program program = CreateProgram(*meshDevice);\n\n";
+  os << "  // Split the output tiles over the plan grid with the pinned work_split\n";
+  os << "  // helper, so each core owns a contiguous range of linear tile ids.\n";
+  os << "  const CoreCoord coreGrid{kGridX, kGridY};\n";
+  os << "  auto [numCores, allCores, coreGroup1, coreGroup2, workPerCore1,\n";
+  os << "        workPerCore2] =\n";
+  os << "      split_work_to_cores(coreGrid, kOutputTileCount);\n";
+  os << "  (void)numCores;\n\n";
+  os << "  // Replicated DRAM buffers: the two inputs, the packed constant tiles,\n";
+  os << "  // and the output. The page size equals the tile size.\n";
+  os << "  const distributed::DeviceLocalBufferConfig dramConfig{\n";
+  os << "      .page_size = kTileBytes, .buffer_type = BufferType::DRAM};\n";
+  os << "  auto activationBuffer = distributed::MeshBuffer::create(\n";
+  os << "      distributed::ReplicatedBufferConfig{.size = sizeof(bfloat16) * activation.size()},\n";
+  os << "      dramConfig, meshDevice.get());\n";
+  os << "  auto weightBuffer = distributed::MeshBuffer::create(\n";
+  os << "      distributed::ReplicatedBufferConfig{.size = sizeof(bfloat16) * weight.size()},\n";
+  os << "      dramConfig, meshDevice.get());\n";
+  os << "  auto gammaBuffer = distributed::MeshBuffer::create(\n";
+  os << "      distributed::ReplicatedBufferConfig{.size = sizeof(bfloat16) * gammaTiles.size()},\n";
+  os << "      dramConfig, meshDevice.get());\n";
+  os << "  auto scalerBuffer = distributed::MeshBuffer::create(\n";
+  os << "      distributed::ReplicatedBufferConfig{.size = sizeof(bfloat16) * scalerTiles.size()},\n";
+  os << "      dramConfig, meshDevice.get());\n";
+  os << "  auto outputBuffer = distributed::MeshBuffer::create(\n";
+  os << "      distributed::ReplicatedBufferConfig{.size = sizeof(bfloat16) * output.size()},\n";
+  os << "      dramConfig, meshDevice.get());\n\n";
+  os << "  // Circular buffers on every core of the range, in the fused plan order.\n";
+  os << "  constexpr tt::DataFormat kCbDataFormat = tt::DataFormat::Float16_b;\n";
+  os << "  const auto createCb = [&](uint32_t cbIndex, uint32_t depth) {\n";
+  os << "    const CircularBufferConfig config =\n";
+  os << "        CircularBufferConfig(depth * kTileBytes, {{cbIndex, kCbDataFormat}})\n";
+  os << "            .set_page_size(cbIndex, kTileBytes);\n";
+  os << "    tt_metal::CreateCircularBuffer(program, allCores, config);\n";
+  os << "  };\n";
+  os << "  createCb(kCbAct, kCbActTiles);\n";
+  os << "  createCb(kCbWeight, kCbWeightTiles);\n";
+  os << "  createCb(kCbGamma, kCbGammaTiles);\n";
+  os << "  createCb(kCbScaler, kCbScalerTiles);\n";
+  os << "  createCb(kCbNorm, kCbNormTiles);\n";
+  os << "  createCb(kCbOut, kCbOutTiles);\n\n";
+  os << "  // Reader compile-time args: one TensorAccessorArgs per DRAM buffer, in\n";
+  os << "  // the order the reader appends its accessors.\n";
+  os << "  std::vector<uint32_t> readerCompileTimeArgs;\n";
+  os << "  TensorAccessorArgs(*activationBuffer).append_to(readerCompileTimeArgs);\n";
+  os << "  TensorAccessorArgs(*weightBuffer).append_to(readerCompileTimeArgs);\n";
+  os << "  TensorAccessorArgs(*gammaBuffer).append_to(readerCompileTimeArgs);\n";
+  os << "  TensorAccessorArgs(*scalerBuffer).append_to(readerCompileTimeArgs);\n";
+  os << "  const KernelHandle readerKernel = tt_metal::CreateKernel(\n";
+  os << "      program, \"kernels/reader.cpp\", allCores,\n";
+  os << "      tt_metal::DataMovementConfig{\n";
+  os << "          .processor = DataMovementProcessor::RISCV_1,\n";
+  os << "          .noc = NOC::RISCV_1_default,\n";
+  os << "          .compile_args = readerCompileTimeArgs});\n\n";
+  os << "  // Writer compile-time args: the output buffer accessor.\n";
+  os << "  std::vector<uint32_t> writerCompileTimeArgs;\n";
+  os << "  TensorAccessorArgs(*outputBuffer).append_to(writerCompileTimeArgs);\n";
+  os << "  const KernelHandle writerKernel = tt_metal::CreateKernel(\n";
+  os << "      program, \"kernels/writer.cpp\", allCores,\n";
+  os << "      tt_metal::DataMovementConfig{\n";
+  os << "          .processor = DataMovementProcessor::RISCV_0,\n";
+  os << "          .noc = NOC::RISCV_0_default,\n";
+  os << "          .compile_args = writerCompileTimeArgs});\n\n";
+  os << "  // Compute kernel: an RMSNorm prologue followed by the matmul, with\n";
+  os << "  // FP32 destination accumulation for the reduce and the matmul.\n";
+  os << "  const tt_metal::ComputeConfig computeConfig{\n";
+  os << "      .math_fidelity = MathFidelity::HiFi4,\n";
+  os << "      .fp32_dest_acc_en = true,\n";
+  os << "      .compile_args = {}};\n";
+  os << "  const KernelHandle computeKernel = tt_metal::CreateKernel(\n";
+  os << "      program, \"kernels/compute.cpp\", allCores, computeConfig);\n\n";
+  os << "  // Per-core runtime args: buffer addresses, the tile decomposition, and\n";
+  os << "  // the contiguous output-tile range this core owns.\n";
+  os << "  const uint32_t activationAddress = activationBuffer->address();\n";
+  os << "  const uint32_t weightAddress = weightBuffer->address();\n";
+  os << "  const uint32_t gammaAddress = gammaBuffer->address();\n";
+  os << "  const uint32_t scalerAddress = scalerBuffer->address();\n";
+  os << "  const uint32_t outputAddress = outputBuffer->address();\n";
+  os << "  uint32_t workOffset = 0;\n";
+  os << "  const auto workGroups = {std::make_pair(coreGroup1, workPerCore1),\n";
+  os << "                           std::make_pair(coreGroup2, workPerCore2)};\n";
+  os << "  for (const auto& [ranges, workPerCore] : workGroups) {\n";
+  os << "    for (const auto& range : ranges.ranges()) {\n";
+  os << "      for (const auto& core : range) {\n";
+  os << "        tt_metal::SetRuntimeArgs(\n";
+  os << "            program, readerKernel, core,\n";
+  os << "            {activationAddress, weightAddress, gammaAddress, scalerAddress,\n";
+  os << "             kOutputRowTiles, kReductionTiles, kOutputColTiles,\n";
+  os << "             workOffset, workPerCore});\n";
+  os << "        tt_metal::SetRuntimeArgs(program, writerKernel, core,\n";
+  os << "                                 {outputAddress, workPerCore, workOffset});\n";
+  os << "        tt_metal::SetRuntimeArgs(program, computeKernel, core,\n";
+  os << "                                 {workOffset, workPerCore});\n";
+  os << "        workOffset += workPerCore;\n";
+  os << "      }\n";
+  os << "    }\n";
+  os << "  }\n\n";
+  os << "  // Upload the tiled inputs and constant tiles, enqueue the workload, read\n";
+  os << "  // the tiled output.\n";
+  os << "  distributed::EnqueueWriteMeshBuffer(cq, activationBuffer, activation, false);\n";
+  os << "  distributed::EnqueueWriteMeshBuffer(cq, weightBuffer, weight, false);\n";
+  os << "  distributed::EnqueueWriteMeshBuffer(cq, gammaBuffer, gammaTiles, false);\n";
+  os << "  distributed::EnqueueWriteMeshBuffer(cq, scalerBuffer, scalerTiles, false);\n";
+  os << "  workload.add_program(deviceRange, std::move(program));\n";
+  os << "  distributed::EnqueueMeshWorkload(cq, workload, false);\n";
+  os << "  distributed::EnqueueReadMeshBuffer(cq, output, outputBuffer, true);\n";
+  os << "}\n\n";
+  os << "}  // namespace\n\n";
+
+  os << "int main() {\n";
+  os << "  try {\n";
+  os << "    // Deterministic inputs: a fixed seed, so a passing run is reproducible.\n";
+  os << "    std::mt19937 rng(kRandomSeed);\n";
+  os << "    std::uniform_real_distribution<float> inputDistribution(kInputLow, kInputHigh);\n";
+  os << "    std::uniform_real_distribution<float> gammaDistribution(kGammaLow, kGammaHigh);\n";
+  os << "    std::vector<bfloat16> activation(kM * kK);\n";
+  os << "    std::vector<bfloat16> weight(kK * kN);\n";
+  os << "    std::vector<float> gamma(kK);\n";
+  os << "    for (bfloat16& value : activation) {\n";
+  os << "      value = bfloat16(inputDistribution(rng));\n";
+  os << "    }\n";
+  os << "    for (bfloat16& value : weight) {\n";
+  os << "      value = bfloat16(inputDistribution(rng));\n";
+  os << "    }\n";
+  os << "    for (float& value : gamma) {\n";
+  os << "      value = gammaDistribution(rng);\n";
+  os << "    }\n\n";
+  os << "    // CPU golden on the row-major inputs: RMSNorm then matmul.\n";
+  os << "    std::vector<bfloat16> goldenNormalized(kM * kK, bfloat16(0.0f));\n";
+  os << "    goldenRmsnorm(activation, gamma, goldenNormalized);\n";
+  os << "    std::vector<bfloat16> golden(kM * kN, bfloat16(0.0f));\n";
+  os << "    goldenMatmul(goldenNormalized, weight, golden);\n\n";
+  os << "    // The device consumes tiled inputs, packed gamma and scaler tiles, and\n";
+  os << "    // produces a tiled output.\n";
+  os << "    const std::vector<bfloat16> activationTiles = tilize_nfaces(activation, kM, kK);\n";
+  os << "    const std::vector<bfloat16> weightTiles = tilize_nfaces(weight, kK, kN);\n";
+  os << "    const std::vector<bfloat16> gammaTiles = packGammaTiles(gamma);\n";
+  os << "    const std::vector<bfloat16> scalerTiles = packScalerTile();\n\n";
+  os << "    const std::shared_ptr<distributed::MeshDevice> meshDevice =\n";
+  os << "        distributed::MeshDevice::create_unit_mesh(kDeviceId);\n";
+  os << "    std::vector<bfloat16> result(kM * kN, bfloat16(0.0f));\n";
+  os << "    runFused(meshDevice, activationTiles, weightTiles, gammaTiles,\n";
+  os << "             scalerTiles, result);\n";
+  os << "    result = untilize_nfaces(result, kM, kN);\n\n";
+  os << "    const float correlation = pearsonCorrelation(golden, result);\n";
+  os << "    const bool passed = correlation >= kPccThreshold;\n";
+  os << "    std::printf(\"Metalium fused RMSNorm+MatMul vs Golden -- PCC = %.7g\\n\", correlation);\n";
+  os << "    std::printf(\n";
+  os << "        \"TENSIXFLOW_RESULT {\\\"status\\\":\\\"%s\\\",\\\"pcc\\\":%.7g,\"\n";
+  os << "        \"\\\"threshold\\\":%.7g}\\n\",\n";
+  os << "        passed ? \"pass\" : \"fail\", correlation, kPccThreshold);\n";
+  os << "    const bool closed = meshDevice->close();\n";
+  os << "    if (!passed) {\n";
+  os << "      return 1;\n";
+  os << "    }\n";
+  os << "    if (!closed) {\n";
+  os << "      return 1;\n";
+  os << "    }\n";
+  os << "    return 0;\n";
+  os << "  } catch (const std::exception& error) {\n";
+  os << "    std::fprintf(stderr, \"generated program failed: %s\\n\", error.what());\n";
+  os << "    return 1;\n";
+  os << "  }\n";
+  os << "}\n";
+}
+
 } // namespace
 
 void emitHost(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
@@ -326,7 +751,14 @@ void emitHost(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
   if (shape->mTiles() > kMaxTilesPerDimension ||
       shape->nTiles() > kMaxTilesPerDimension ||
       shape->kTiles() > kMaxTilesPerDimension) {
-    os << "// emission error: the matmul shape exceeds the one-core emitter bound\n";
+    os << "// emission error: the matmul shape exceeds the emitter bound\n";
+    return;
+  }
+
+  // A fused plan emits the fused host variant: same grid and work split, plus
+  // the gamma and scaler inputs and an RMSNorm-then-matmul golden.
+  if (isFusedRmsnormMatmul(schedule)) {
+    emitFusedHost(kernel, schedule, *shape, os);
     return;
   }
 
@@ -349,12 +781,14 @@ void emitHost(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
   os << "#include <tt-metalium/distributed.hpp>\n";
   os << "#include <tt-metalium/host_api.hpp>\n";
   os << "#include <tt-metalium/tensor_accessor_args.hpp>\n";
-  os << "#include <tt-metalium/tilize_utils.hpp>\n\n";
+  os << "#include <tt-metalium/tilize_utils.hpp>\n";
+  os << "#include <tt-metalium/work_split.hpp>\n\n";
   os << "using namespace tt;\n";
   os << "using namespace tt::tt_metal;\n";
   os << "using namespace tt::constants;\n\n";
 
-  emitHostConstants(*shape, slots, os);
+  emitHostConstants(*shape, static_cast<uint32_t>(schedule.getGridY()),
+                    static_cast<uint32_t>(schedule.getGridX()), slots, os);
   emitHostReference(os);
   emitHostMatmulFunction(os);
   emitHostMain(os);

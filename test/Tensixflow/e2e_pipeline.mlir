@@ -9,9 +9,11 @@
 // canonicalizer renumbers the SSA values. No fusion runs in this part, so the
 // rmsnorm and matmul stay separate.
 //
-// Part 2: over a pure matmul the planning pipeline runs through to emission and
-// the emitted host program uses the pinned mesh API and carries the self-check.
-// A fused graph is rejected by the emitter, so the matmul is the supported path.
+// Part 2: over a pure matmul the planning pipeline runs through to emission.
+// The emitted host program realizes the plan's core grid with
+// split_work_to_cores and uses the pinned mesh API, and it carries the
+// self-check result line. A fused graph is rejected by the emitter, so the
+// matmul is the supported path.
 
 //--- layout.mlir
 // CHECK-LABEL: tensixflow.func @e2e
@@ -31,11 +33,14 @@ tensixflow.func @e2e(%x: tensor<1x2048x4096xbf16>, %w: tensor<4096x12288xbf16>, 
 // EMIT: host.cpp - TensixFlow-generated TT-Metalium host program
 // EMIT: distributed::MeshCommandQueue& cq = meshDevice->mesh_command_queue()
 // EMIT: Program program = CreateProgram(*meshDevice)
+// EMIT: const CoreCoord coreGrid{kGridX, kGridY}
+// EMIT: split_work_to_cores(coreGrid, kOutputTileCount)
 // EMIT: distributed::MeshBuffer::create(
 // EMIT: CircularBufferConfig(kCbIn0Tiles * kTileBytes,
-// EMIT: "kernels/reader.cpp"
-// EMIT: "kernels/writer.cpp"
-// EMIT: "kernels/compute.cpp"
+// EMIT: tt_metal::CreateCircularBuffer(program, allCores, in0Config)
+// EMIT: "kernels/reader.cpp", allCores
+// EMIT: "kernels/writer.cpp", allCores
+// EMIT: "kernels/compute.cpp", allCores, computeConfig
 // EMIT: workload.add_program(deviceRange, std::move(program))
 // EMIT: distributed::EnqueueMeshWorkload(cq, workload, false)
 // EMIT: distributed::MeshDevice::create_unit_mesh(kDeviceId)
@@ -43,9 +48,9 @@ tensixflow.func @e2e(%x: tensor<1x2048x4096xbf16>, %w: tensor<4096x12288xbf16>, 
 // EMIT: // ===== file: compute.cpp =====
 // EMIT: matmul_tiles(cb_in0, cb_in1, 0, 0, 0)
 // EMIT: // ===== file: reader.cpp =====
-// EMIT: noc_async_read_page
+// EMIT: noc_async_read_page(tile_a, a, l1_write_addr_in0)
 // EMIT: // ===== file: writer.cpp =====
-// EMIT: noc_async_write_page
+// EMIT: noc_async_write_page(i, c, l1_read_addr)
 tensixflow.func @matmul(%a: tensor<64x64xbf16>, %b: tensor<64x64xbf16>) -> tensor<64x64xbf16> {
   %0 = tensixflow.matmul %a, %b : tensor<64x64xbf16> x tensor<64x64xbf16> -> tensor<64x64xbf16>
   tensixflow.return %0 : tensor<64x64xbf16>

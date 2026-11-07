@@ -10,7 +10,10 @@
 // self-checking TT-Metalium host program for the pinned tt-metal release.
 //
 // The emitted program mirrors tt-metal v0.82.0-rc2
-// programming_examples/matmul/matmul_single_core:
+// programming_examples/matmul/matmul_multi_core:
+//
+//   split_work_to_cores(plan grid, output tiles), per-core tile ranges,
+//   kernels and circular buffers created on the plan grid's CoreRangeSet,
 //
 //   distributed::MeshDevice::create_unit_mesh,
 //   Program CreateProgram(distributed::MeshDevice&),
@@ -24,7 +27,7 @@
 //   distributed::EnqueueWriteMeshBuffer / EnqueueMeshWorkload /
 //       EnqueueReadMeshBuffer.
 //
-// The program computes a deterministic bf16 matmul on one core, compares the
+// The program computes a deterministic bf16 matmul on the plan grid, compares the
 // device result with a CPU reference matmul, and prints a machine-readable
 // result line:
 //

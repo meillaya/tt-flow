@@ -65,6 +65,43 @@ std::vector<plan::CBSpec> toCBSpecs(const CBAllocation &allocation) {
   return allocation.cbs;
 }
 
+int64_t fusedCbTileCount(int64_t kTiles, int64_t stageTiles) {
+  if (kTiles <= 0 || stageTiles <= 0) {
+    return 0;
+  }
+  return 2 * stageTiles + 2 * kTiles + kFusedScalerCbDepth +
+         kFusedOutputCbDepth;
+}
+
+CBAllocation allocateFusedCBs(const device::DeviceSpec &deviceSpec,
+                              int64_t kTiles, int64_t stageTiles,
+                              int64_t reserveBytes) {
+  CBAllocation allocation;
+  if (kTiles <= 0 || stageTiles <= 0) {
+    return allocation;
+  }
+
+  const int64_t depths[kFusedCbCount] = {
+      stageTiles, kTiles, kTiles, kFusedScalerCbDepth, stageTiles,
+      kFusedOutputCbDepth};
+  const int64_t budget = deviceSpec.cbBudget(reserveBytes);
+  for (std::size_t i = 0; i < kFusedCbCount; ++i) {
+    const int64_t index = kFusedCBIndices[i];
+    if (!isValidCBIndex(index)) {
+      return CBAllocation{};
+    }
+    allocation.cbs.push_back(
+        plan::CBSpec{index, depths[i], deviceSpec.tileBytes});
+    allocation.totalBytes += depths[i] * deviceSpec.tileBytes;
+  }
+
+  // The reported fused stage depth is the activation staging depth; the other
+  // depths are fixed by the roles.
+  allocation.depth = stageTiles;
+  allocation.feasible = allocation.totalBytes <= budget;
+  return allocation;
+}
+
 } // namespace scheduler
 } // namespace tensixflow
 } // namespace mlir

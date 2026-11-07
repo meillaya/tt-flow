@@ -19,6 +19,8 @@
 //                                  no out-of-range index.
 //   7. DegenerateGuarded         - numCBs <= 0 is guarded.
 //   8. ReportSeam                - toCBSpecs yields the plan::CBSpec vector.
+//   9. Fused*                    - the fused six-buffer layout: deterministic
+//                                  order, budget invariant, guarded request.
 //
 //===----------------------------------------------------------------------===//
 
@@ -174,6 +176,40 @@ TEST(CBAllocatorTest, DegenerateGuarded) {
   EXPECT_FALSE(negative.feasible);
   EXPECT_TRUE(negative.cbs.empty());
   EXPECT_EQ(negative.totalBytes, 0);
+}
+
+TEST(CBAllocatorTest, FusedLayoutInDeterministicOrder) {
+  // The fused plan allocates six buffers in the documented order: activation
+  // stage c_0, weight c_1, gamma c_2, scaler c_3, normalized c_4, output c_16.
+  CBAllocation allocation = allocateFusedCBs(n150(), /*kTiles=*/4,
+                                             /*stageTiles=*/8);
+  EXPECT_TRUE(allocation.feasible);
+  ASSERT_EQ(allocation.cbs.size(), kFusedCbCount);
+  const int64_t expectedIndices[kFusedCbCount] = {0, 1, 2, 3, 4, 16};
+  const int64_t expectedDepths[kFusedCbCount] = {8, 4, 4, 1, 8, 2};
+  for (std::size_t i = 0; i < kFusedCbCount; ++i) {
+    EXPECT_EQ(allocation.cbs[i].index, expectedIndices[i]);
+    EXPECT_EQ(allocation.cbs[i].depth, expectedDepths[i]);
+    EXPECT_EQ(allocation.cbs[i].tileBytes, 2048);
+  }
+  EXPECT_EQ(allocation.totalBytes, 27 * 2048);
+  EXPECT_EQ(fusedCbTileCount(4, 8), 27);
+}
+
+TEST(CBAllocatorTest, FusedLayoutFitsBudgetInvariant) {
+  // Staging for the emittable example fits the n150 budget; the oversized
+  // staging of the large running example does not.
+  EXPECT_TRUE(allocateFusedCBs(n150(), 4, 8).feasible);
+  CBAllocation oversized = allocateFusedCBs(n150(), 128, 256);
+  EXPECT_FALSE(oversized.feasible);
+  EXPECT_EQ(fusedCbTileCount(128, 256), 771);
+}
+
+TEST(CBAllocatorTest, FusedLayoutDegenerateGuarded) {
+  // Non-positive tile counts are guarded: infeasible, no buffers, no crash.
+  EXPECT_FALSE(allocateFusedCBs(n150(), 0, 8).feasible);
+  EXPECT_FALSE(allocateFusedCBs(n150(), 4, 0).feasible);
+  EXPECT_EQ(fusedCbTileCount(0, 8), 0);
 }
 
 TEST(CBAllocatorTest, ReportSeam) {

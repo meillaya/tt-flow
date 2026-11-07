@@ -8,8 +8,9 @@
 // The --tensixflow-emit-metalium pass: the code generation entry point. It reads
 // the tile-level schedule IR (the `tensixflow.sched.kernel` built by
 // --tensixflow-lower-to-ttkernel), the module-level #tensixflow.schedule plan
-// attribute, and the module's tensixflow.device attribute, then emits the four
-// generated translation units of the pinned-tt-metal project:
+// attribute, the module's tensixflow.emission emitted-path accounting, and the
+// module's tensixflow.device attribute, then emits the four generated
+// translation units of the pinned-tt-metal project:
 //
 //   host.cpp            (emitHost),
 //   kernels/compute.cpp (emitCompute),
@@ -23,9 +24,9 @@
 // separated by file-delimiter banners.
 //
 // Validation runs before any output in both modes: the schedule attribute, the
-// sched.kernel, the matmul shape, and the unsupported fused path are all checked
-// first, so a failure never leaves a half-written tree and never reports a
-// compile that did not happen.
+// sched.kernel, the matmul shape, the emission block, the output-tile mapping,
+// and the unsupported fused path are all checked first, so a failure never
+// leaves a half-written tree and never reports a compile that did not happen.
 //
 // The emitted project targets the pinned tt-metal release recorded in
 // deps/tt-metal.lock. scripts/build_generated.sh compiles and links it, and
@@ -46,6 +47,9 @@
 #include "tensixflow/TensixflowAttrs.h"
 #include "tensixflow/TensixflowSchedule.h"
 
+#include "CBAllocator.h"
+
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -61,6 +65,33 @@ namespace tensixflow {
 #include "tensixflow/TensixflowPasses.h.inc"
 
 namespace {
+
+// The schedule attribute with the fused plan's six-buffer allocation in place.
+// The emitters read the circular-buffer roles by position from this copy; the
+// module keeps the three-buffer planning allocation.
+TensixflowScheduleAttr withFusedCbAllocation(
+    MLIRContext *ctx, TensixflowScheduleAttr schedule,
+    const scheduler::CBAllocation &allocation) {
+  IntegerType i64 = IntegerType::get(ctx, 64);
+  llvm::SmallVector<Attribute> indices;
+  llvm::SmallVector<Attribute> depths;
+  llvm::SmallVector<Attribute> tileBytes;
+  for (const CBSpec &cb : allocation.cbs) {
+    indices.push_back(IntegerAttr::get(i64, cb.index));
+    depths.push_back(IntegerAttr::get(i64, cb.depth));
+    tileBytes.push_back(IntegerAttr::get(i64, cb.tileBytes));
+  }
+  return TensixflowScheduleAttr::get(
+      ctx, schedule.getGridY(), schedule.getGridX(),
+      schedule.getActivationSharding(), schedule.getWeightStrategy(),
+      schedule.getIntermediateStorage(), schedule.getFusion(),
+      ArrayAttr::get(ctx, indices), ArrayAttr::get(ctx, depths),
+      ArrayAttr::get(ctx, tileBytes), schedule.getDramReadBytes(),
+      schedule.getDramWriteBytes(), schedule.getL1Bytes(),
+      schedule.getMulticastBytes(), schedule.getSavedDramReadBytes(),
+      schedule.getSavedDramWriteBytes(),
+      schedule.getSavedIntermediateBytes());
+}
 
 // The device name carried by the module's tensixflow.device attribute; the
 // planner stamps it, and a default keeps a hand-written module emittable.
@@ -105,24 +136,6 @@ public:
       return;
     }
 
-    // The metal emitter covers the pure matmul path only. A fused graph would
-    // need tile intrinsics the pinned compute API does not export, so fail with
-    // the supported path and the planning alternative named instead of emitting
-    // a program that cannot compute the fused graph.
-    if (isFusedPlan(schedule)) {
-      kernel.emitError()
-          << "cannot emit a TT-Metalium program for the fused plan '"
-          << fusionKind(schedule)
-          << "'. The emitter supports the pure matmul path only "
-             "(tensixflow.matmul with no fused prologue or epilogue; see "
-             "examples/matmul.mlir). For a fused graph, use the plan and "
-             "report path: run the planning passes from examples/rmsnorm_matmul.mlir, "
-             "pipe the module into tensixflow-translate --tensixflow-to-json, "
-             "then render it with tensixflow-report.";
-      signalPassFailure();
-      return;
-    }
-
     // The matmul shape is what sizes the DRAM buffers and the reference matmul
     // in the emitted host program. Without it the emitter would have to invent
     // the dimensions, so refuse.
@@ -135,12 +148,126 @@ public:
       return;
     }
 
+    // The emitted-path accounting is required: it records the work split and
+    // traffic the emitted program will produce, and the generated README quotes
+    // it. The attribute is stamped by the planning pass.
+    auto emission =
+        module->getAttrOfType<TensixflowEmissionAttr>(kEmissionAttrName);
+    if (!emission) {
+      kernel.emitError()
+          << "requires a " << kEmissionAttrName
+          << " attribute; run --tensixflow-plan-noc-sharding first";
+      signalPassFailure();
+      return;
+    }
+    if (emission.getMapping().getValue() != kOutputTileRangesMapping) {
+      kernel.emitError()
+          << "unknown emission mapping '" << emission.getMapping().getValue()
+          << "'; the emitter supports '" << kOutputTileRangesMapping
+          << "' only, which --tensixflow-plan-noc-sharding stamps";
+      signalPassFailure();
+      return;
+    }
+
     llvm::StringRef deviceName = resolveDeviceName(module);
+    std::optional<MatmulShape> shape = readMatmulShape(kernel);
+    TensixflowScheduleAttr effectiveSchedule = schedule;
+
+    // Fused RMSNorm + MatMul: the plan's estimate gates emission, then the
+    // emitter allocates the fused circular-buffer set against the device budget
+    // and re-stamps the schedule copy the emitters read. The module keeps the
+    // planning allocation so the plan JSON stays the planning artifact.
+    if (isFusedPlan(schedule)) {
+      if (!isFusedRmsnormMatmul(schedule)) {
+        kernel.emitError()
+            << "cannot emit a TT-Metalium program for the fused plan '"
+            << fusionKind(schedule) << "'. The emitter supports the '"
+            << kFusedRmsnormMatmulKind
+            << "' pattern (an RMSNorm prologue followed by a matmul; see "
+               "examples/rmsnorm_matmul_small.mlir). For another fused graph, "
+               "emit the matmul-only path from examples/matmul.mlir, or use "
+               "the plan and report path: run the planning passes, pipe the "
+               "module into tensixflow-translate --tensixflow-to-json, then "
+               "render it with tensixflow-report.";
+        signalPassFailure();
+        return;
+      }
+
+      const device::DeviceSpec *spec = device::lookup(deviceName);
+      if (spec == nullptr) {
+        spec = device::defaultDevice();
+      }
+      const int64_t budgetTiles =
+          spec->cbBudget(device::kDefaultL1ReserveBytes) / spec->tileBytes;
+      const int64_t kTiles = shape->kTiles();
+      const int64_t stageTiles = emission.getFusedStageTiles();
+
+      // The plan's emission block is the first gate: the planning pass records
+      // whether the fused staging fits the per-core budget, including the
+      // gamma tiles and the scaler. The emitter reports the recorded staging
+      // and the budget it was compared against rather than recomputing the
+      // estimate, so the diagnostic cannot disagree with the plan.
+      if (!emission.getFusedFeasible()) {
+        kernel.emitError()
+            << "the fused plan '" << fusionKind(schedule)
+            << "' is not emittable: it stages " << stageTiles
+            << " circular-buffer tiles of activation rows plus " << kTiles
+            << " weight tiles and " << kTiles << " gamma tiles, against "
+            << budgetTiles << " available tiles per core on '" << spec->name
+            << "', and the emitted-path estimate marks the fused variant "
+               "infeasible. Emit the matmul-only path from examples/matmul.mlir, "
+               "or keep the fused plan as a planning result: run tensixflow-opt "
+               "through --tensixflow-plan-noc-sharding, pipe the module into "
+               "tensixflow-translate --tensixflow-to-json, then render it with "
+               "tensixflow-report.";
+        signalPassFailure();
+        return;
+      }
+
+      scheduler::CBAllocation fused =
+          scheduler::allocateFusedCBs(*spec, kTiles, stageTiles);
+      const int64_t neededTiles = scheduler::fusedCbTileCount(kTiles, stageTiles);
+      if (!fused.feasible) {
+        kernel.emitError()
+            << "the fused plan '" << fusionKind(schedule) << "' needs "
+            << neededTiles << " circular-buffer tiles (2 * " << stageTiles
+            << " staged + " << kTiles << " weight + " << kTiles
+            << " gamma + 1 scaler + 2 output) against " << budgetTiles
+            << " available tiles per core on '" << spec->name
+            << "', so the fused program cannot be emitted. Emit the "
+               "matmul-only path from examples/matmul.mlir, or keep the fused "
+               "plan as a planning result: run tensixflow-opt through "
+               "--tensixflow-plan-noc-sharding, pipe the module into "
+               "tensixflow-translate --tensixflow-to-json, then render it with "
+               "tensixflow-report.";
+        signalPassFailure();
+        return;
+      }
+
+      // The compute kernel accumulates one output tile per output column block
+      // in the destination register file. FP32 destination accumulation leaves
+      // eight destination tiles.
+      if (shape->nTiles() > kFusedOutputColumnTileLimit) {
+        kernel.emitError()
+            << "the fused plan '" << fusionKind(schedule) << "' has "
+            << shape->nTiles() << " output column tiles, but the emitted fused "
+               "compute kernel holds one output tile per column block in the "
+               "destination registers and FP32 accumulation leaves "
+            << kFusedOutputColumnTileLimit
+            << ". Emit the matmul-only path from examples/matmul.mlir for this "
+               "shape, or use the plan and report path.";
+        signalPassFailure();
+        return;
+      }
+
+      effectiveSchedule = withFusedCbAllocation(&getContext(), schedule, fused);
+    }
 
     // File mode: assemble the complete standalone project tree.
     if (!outputDir.empty()) {
       std::string error;
-      if (failed(emitProject(kernel, schedule, deviceName, outputDir, error))) {
+      if (failed(emitProject(kernel, effectiveSchedule, deviceName, emission,
+                             outputDir, error))) {
         module.emitError("failed to write the Metalium project: ") << error;
         signalPassFailure();
         return;
@@ -152,13 +279,13 @@ public:
     // the prefix before the first banner; compute.cpp stays between host.cpp and
     // the two data-movement kernels so the FileCheck gates on reader/writer
     // output stay separate from the compute kernel.
-    emitHost(kernel, schedule, llvm::outs());
+    emitHost(kernel, effectiveSchedule, llvm::outs());
     llvm::outs() << "\n// ===== file: compute.cpp =====\n";
-    emitCompute(kernel, schedule, llvm::outs());
+    emitCompute(kernel, effectiveSchedule, llvm::outs());
     llvm::outs() << "\n// ===== file: reader.cpp =====\n";
-    emitReader(kernel, schedule, llvm::outs());
+    emitReader(kernel, effectiveSchedule, llvm::outs());
     llvm::outs() << "\n// ===== file: writer.cpp =====\n";
-    emitWriter(kernel, schedule, llvm::outs());
+    emitWriter(kernel, effectiveSchedule, llvm::outs());
     llvm::outs().flush();
 
     // mlir-opt prints the transformed module to stdout after all passes run, and

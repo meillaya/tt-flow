@@ -39,6 +39,17 @@ inline constexpr int64_t kEmitTileHeight = 32;
 inline constexpr int64_t kEmitTileWidth = 32;
 inline constexpr int64_t kEmitTileBytes = 2048;
 
+// The module attribute --tensixflow-plan-noc-sharding stamps with the
+// emitted-path accounting block. The Metalium emitter requires it.
+inline constexpr llvm::StringLiteral kEmissionAttrName =
+    "tensixflow.emission";
+
+// The one output-tile mapping the emitter supports: each core owns a
+// contiguous range of linear output-tile ids, which is what
+// split_work_to_cores produces.
+inline constexpr llvm::StringLiteral kOutputTileRangesMapping =
+    "output-tile-ranges";
+
 // The attribute --tensixflow-lower-to-ttkernel stamps on the sched.kernel. It
 // carries the matmul shape in elements; trip counts alone cannot distinguish
 // the dimensions, and the host program needs M/N/K to size the DRAM buffers and
@@ -147,6 +158,42 @@ inline llvm::StringRef fusionKind(TensixflowScheduleAttr schedule) {
 
 inline bool isFusedPlan(TensixflowScheduleAttr schedule) {
   return fusionKind(schedule) != "none";
+}
+
+// The one fused pattern the Metalium emitter supports.
+inline constexpr llvm::StringLiteral kFusedRmsnormMatmulKind =
+    "fused_rmsnorm_matmul";
+
+inline bool isFusedRmsnormMatmul(TensixflowScheduleAttr schedule) {
+  return fusionKind(schedule) == kFusedRmsnormMatmulKind;
+}
+
+// The fused plan's circular-buffer positions in the schedule allocation. The
+// allocation is deterministic (see CBAllocator.h): index order, not role order.
+inline constexpr std::size_t kFusedActivationSlot = 0;
+inline constexpr std::size_t kFusedWeightSlot = 1;
+inline constexpr std::size_t kFusedGammaSlot = 2;
+inline constexpr std::size_t kFusedScalerSlot = 3;
+inline constexpr std::size_t kFusedNormalizedSlot = 4;
+inline constexpr std::size_t kFusedOutputSlot = 5;
+inline constexpr std::size_t kFusedCbSlotCount = 6;
+
+// The fused compute kernel holds one output tile per output column block in the
+// destination registers while it reduces over K. FP32 destination accumulation
+// leaves eight destination tiles, so that is the limit on output column tiles.
+inline constexpr int64_t kFusedOutputColumnTileLimit = 8;
+
+// The RMSNorm epsilon recorded on the fused graph's prologue op. The compute
+// kernel bakes the epsilon into the SFPU scalar add, so the emitter needs the
+// value. Returns a null attribute when the kernel carries no rmsnorm op.
+inline FloatAttr fusedEpsilon(TensixflowSchedKernelOp kernel) {
+  FloatAttr epsilon;
+  kernel.walk([&](TensixflowSchedRmsnormOp op) {
+    if (!epsilon) {
+      epsilon = op.getEpsilonAttr();
+    }
+  });
+  return epsilon;
 }
 
 } // namespace tensixflow

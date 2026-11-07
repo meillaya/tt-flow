@@ -68,6 +68,47 @@ CBAllocation allocateCBs(
 /// drop into PlanDraft.cbSpecs.
 std::vector<plan::CBSpec> toCBSpecs(const CBAllocation &allocation);
 
+//===----------------------------------------------------------------------===//
+// Fused RMSNorm + MatMul allocation
+//===----------------------------------------------------------------------===//
+
+/// The fused plan's circular buffers, in the deterministic allocation order the
+/// compute kernel reads them by: activation stage c_0, weight c_1, gamma c_2,
+/// reduce scaler c_3, normalized activation c_4, output c_16.
+enum class FusedCbSlot : std::size_t {
+  ActivationStage = 0,
+  Weight = 1,
+  Gamma = 2,
+  Scaler = 3,
+  NormalizedActivation = 4,
+  Output = 5,
+};
+
+inline constexpr std::size_t kFusedCbCount = 6;
+inline constexpr int64_t kFusedCBIndices[kFusedCbCount] = {0, 1, 2, 3, 4, 16};
+inline constexpr int64_t kFusedScalerCbDepth = 1;
+inline constexpr int64_t kFusedOutputCbDepth = 2;
+
+/// Circular-buffer tiles the fused plan needs: the staged activation rows and
+/// the normalized activation rows (stageTiles each), the weight tiles and the
+/// gamma tiles (kTiles each), one reduce scaler tile, and two output tiles.
+int64_t fusedCbTileCount(int64_t kTiles, int64_t stageTiles);
+
+/// Allocate the fused plan's six circular buffers from the device's per-core CB
+/// budget, in FusedCbSlot order:
+///   c_0 activation stage  depth stageTiles
+///   c_1 weight            depth kTiles
+///   c_2 gamma             depth kTiles
+///   c_3 scaler            depth 1
+///   c_4 normalized        depth stageTiles
+///   c_16 output           depth 2
+/// Feasibility is true only when every index is valid and the total footprint
+/// fits the budget; a degenerate request (non-positive kTiles or stageTiles)
+/// returns feasible == false with no buffers instead of dividing by zero.
+CBAllocation allocateFusedCBs(
+    const device::DeviceSpec &deviceSpec, int64_t kTiles, int64_t stageTiles,
+    int64_t reserveBytes = device::kDefaultL1ReserveBytes);
+
 } // namespace scheduler
 } // namespace tensixflow
 } // namespace mlir

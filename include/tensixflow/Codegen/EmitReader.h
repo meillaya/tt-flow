@@ -7,11 +7,11 @@
 //
 // The reader.cpp emitter. Emits the BRISC data-movement kernel for the pinned
 // tt-metal release: one TensorAccessor per DRAM input buffer, and the tile loop
-// that streams the A and B tiles of every output tile into the input circular
-// buffers with cb_reserve_back / noc_async_read_page / cb_push_back. The
-// emitted kernel is derived from the pinned release's
-// matmul_single_core/kernels/dataflow/reader_single_core_mm.cpp; the circular
-// buffer indices come from the plan's allocation.
+// that streams the A and B tiles of this core's output-tile range into the
+// input circular buffers with cb_reserve_back / noc_async_read_page /
+// cb_push_back. The emitted kernel is derived from the pinned release's
+// matmul_multi_core partitioned reader; the circular-buffer indices and the
+// per-core tile range come from the plan.
 //
 // The kernel compiles with tt-metal's JIT compiler at run time, so it is checked
 // by actually building and running the emitted project against the pinned

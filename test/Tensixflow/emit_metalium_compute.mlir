@@ -1,10 +1,11 @@
 // RUN: tensixflow-opt --tensixflow-plan-noc-sharding --tensixflow-allocate-circular-buffers --tensixflow-lower-to-ttkernel --tensixflow-emit-metalium %s | FileCheck %s
 
 // Structural test for the emitted compute kernel. The compute program is the
-// tile-math half of the pinned matmul example: matrix-engine start-up, the outer
-// product blocked matmul with fp32 destination accumulation, and the pack into
-// the output circular buffer. The old stub headers are gone, so the checks name
-// the pinned kernel API headers and intrinsics instead.
+// tile-math half of the pinned multi-core matmul example: matrix-engine
+// start-up, then one output tile per loop iteration, reducing over the K tiles
+// of the output tiles this core owns. The per-core tile count and K arrive as
+// runtime arguments from the host. The old stub headers are gone, so the checks
+// name the pinned kernel API headers and intrinsics instead.
 
 // CHECK: // ===== file: compute.cpp =====
 // CHECK: #include "api/compute/compute_kernel_hw_startup.h"
@@ -12,14 +13,14 @@
 // CHECK: #include "api/compute/tile_move_copy.h"
 // CHECK: #include "hostdevcommon/kernel_structs.h"
 // CHECK: void kernel_main()
-// CHECK: const uint32_t Mt = get_compile_time_arg_val(0)
-// CHECK: const uint32_t Kt = get_compile_time_arg_val(1)
-// CHECK: const uint32_t Nt = get_compile_time_arg_val(2)
+// CHECK: uint32_t num_output_tiles = get_arg_val<uint32_t>(0)
+// CHECK: uint32_t Kt = get_arg_val<uint32_t>(1)
 // CHECK: constexpr tt::CBIndex cb_in0 = tt::CBIndex::c_0
 // CHECK: constexpr tt::CBIndex cb_in1 = tt::CBIndex::c_1
 // CHECK: constexpr tt::CBIndex cb_out = tt::CBIndex::c_16
 // CHECK: compute_kernel_hw_startup<SrcOrder::Reverse>(cb_in0, cb_in1, cb_out)
 // CHECK: matmul_init(cb_in0, cb_in1)
+// CHECK: for (uint32_t i = 0; i < num_output_tiles; ++i)
 // CHECK: tile_regs_acquire()
 // CHECK: cb_wait_front(cb_in0, 1)
 // CHECK: cb_wait_front(cb_in1, 1)

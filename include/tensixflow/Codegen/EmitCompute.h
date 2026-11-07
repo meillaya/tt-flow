@@ -7,10 +7,10 @@
 //
 // The compute.cpp emitter. Emits the TRISC compute kernel for the pinned
 // tt-metal release: compute_kernel_hw_startup, matmul_init, and the outer
-// product blocked matmul loop (tile_regs_* around matmul_tiles, then pack_tile
-// into the output circular buffer). The emitted kernel is derived from the
-// pinned release's matmul_single_core/kernels/compute/mm.cpp; the circular
-// buffer indices come from the plan's allocation.
+// product blocked matmul loop over this core's output tiles (tile_regs_* around
+// matmul_tiles, then pack_tile into the output circular buffer). The emitted
+// kernel is derived from the pinned release's matmul_multi_core compute kernel;
+// the circular-buffer indices come from the plan.
 //
 // Only the pure matmul path is emitted. A fused RMSNorm or MLP plan is rejected
 // by the pass with an actionable diagnostic before this emitter is called,

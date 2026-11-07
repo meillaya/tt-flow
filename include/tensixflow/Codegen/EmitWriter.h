@@ -5,12 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The writer.cpp emitter. Emits the data-movement kernel that drains the output
-// circular buffer to DRAM for the pinned tt-metal release: one TensorAccessor
-// for the output buffer and the tile loop that waits on the output circular
-// buffer, writes each tile with noc_async_write_page, and pops it. The emitted
-// kernel is derived from the pinned release's
-// matmul_single_core/kernels/dataflow/writer_single_core_mm.cpp.
+// The writer.cpp emitter. Emits the data-movement kernel that drains this
+// core's output tiles from the circular buffer to DRAM for the pinned tt-metal
+// release: one TensorAccessor for the output buffer and the tile loop that
+// waits on the output circular buffer, writes each tile with
+// noc_async_write_page at its linear output id, and pops it. The emitted kernel
+// is derived from the pinned release's matmul_multi_core writer.
 //
 // The kernel compiles with tt-metal's JIT compiler at run time, so it is checked
 // by actually building and running the emitted project against the pinned

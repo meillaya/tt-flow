@@ -41,6 +41,7 @@ namespace tensixflow {
 
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
+class TensixflowEmissionAttr;
 
 /// Render the generated project's CMakeLists.txt: a TT-Metalium executable that
 /// links the real package with find_package(TT-Metalium REQUIRED) and TT::Metalium
@@ -54,15 +55,16 @@ void emitProjectCMakeLists(TensixflowSchedKernelOp kernel,
 /// statement for the pinned upstream release.
 void emitProjectReadme(TensixflowSchedKernelOp kernel,
                        TensixflowScheduleAttr schedule, llvm::StringRef deviceName,
-                       llvm::raw_ostream &os);
+                       TensixflowEmissionAttr emission, llvm::raw_ostream &os);
 
 /// Write the complete project tree for `kernel` + `schedule` into `outputDir`,
 /// creating the directory (and parents) as needed. On any I/O failure returns
 /// failure() and sets `error` to a descriptive message.
 LogicalResult emitProject(TensixflowSchedKernelOp kernel,
                           TensixflowScheduleAttr schedule,
-                          llvm::StringRef deviceName, llvm::StringRef outputDir,
-                          std::string &error);
+                          llvm::StringRef deviceName,
+                          TensixflowEmissionAttr emission,
+                          llvm::StringRef outputDir, std::string &error);
 
 } // namespace tensixflow
 } // namespace mlir
