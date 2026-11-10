@@ -39,7 +39,7 @@ devenv shell -- bash scripts/run_generated.sh build-generated/matmul   # run und
 devenv shell -- bash scripts/run_generated.sh --device                 # run on a card
 ```
 
-`scripts/test.sh` runs every emittable example after building. The examples are `examples/matmul.mlir`, `examples/matmul_small.mlir`, and `examples/rmsnorm_matmul_small.mlir`, the emittable fused example.
+`scripts/test.sh` runs every emittable example after building. The examples are `examples/matmul.mlir`, `examples/matmul_padded.mlir`, `examples/matmul_small.mlir`, `examples/rmsnorm_matmul_small.mlir` (fused RMSNorm+MatMul), and `examples/mlp_block_small.mlir` (full fused MLP). The large `examples/rmsnorm_matmul.mlir` and `examples/mlp_block.mlir` stay analysis inputs and are rejected with their tile arithmetic.
 
 The last command needs a card. On a card host, probe first:
 
@@ -52,6 +52,12 @@ devenv shell -- python3 scripts/device_probe.py  # exit 2 with no card, 1 on mis
 ```sh
 devenv shell -- bash scripts/fetch_tt_metal.sh       # tt-metal v0.82.0-rc2 artifacts + ttsim v1.15.1 into .deps/
 devenv shell -- bash scripts/fetch_ttmlir_fixtures.sh # tt-mlir 0.9.0.dev20260221 wheel and fixtures into .deps/
+```
+
+TTIR that carries layout encodings goes through the pinned-bindings normalizer before import:
+
+```sh
+devenv shell -- bash scripts/normalize_ttir.sh layout.mlir -o bare.mlir
 ```
 
 Both caches live in `.deps/` and are gitignored. The lock files in `deps/` record the tags and sha256 digests. Change a pin in the lock file, then re-run the fetch script.

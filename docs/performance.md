@@ -94,21 +94,42 @@ The binding constraint is compute: the DRAM term is 74% of the compute term, bel
 
 ## Emitted-path projection
 
-The plan's `noc` block is the strategy projection: it counts the activation and weight once and assumes multicast and reuse. The emitted program does not implement that strategy yet. It splits output tiles into contiguous ranges over the plan grid, and each core reads the activation and weight tiles its output tiles need directly from DRAM with unicast. The plan's `emission` block carries the projection of that access pattern, computed by `lib/tensixflow/Scheduler/EmissionEstimator.cpp`:
+The plan's `noc` block is the strategy projection: it counts the activation and weight once and assumes multicast and reuse. The emitted program now matches part of that strategy. The planning pass selects a mapping from the tile geometry and the per-core budget, and `lib/tensixflow/Scheduler/EmissionEstimator.cpp` projects the traffic of that mapping.
+
+`blocked-reuse` is selected when the core's resident activation row block, resident weight column block, and output buffer fit the budget. The grid is split into 2D blocks: `rowsPerCore = ceil(mTiles / gridY)` and `colsPerCore = ceil(nTiles / gridX)`. Each core stages its activation row block and weight column block in L1 once. The weight column block is read once and multicast down the used row blocks; the activation row block is read once per used column block because activation multicast is not emitted.
 
 ```
+blocked-reuse:
+cores_used          = usedRows * usedCols
+max_tiles_per_core  = largest row block * largest column block
+dram_read_bytes     = (kTiles * usedCols * sum(rows per used row block) +
+                       kTiles * weightReplication * sum(cols per used col block)) *
+                      2048
+dram_write_bytes    = mTiles * nTiles * 2048
+weightReplication   = 1 when the weight block is multicast, usedRows otherwise
+```
+
+`output-tile-ranges` remains the fallback when the resident blocks do not fit, and the fused path always uses it because the fused reader stages activation rows itself:
+
+```
+output-tile-ranges:
 cores_used          = min(grid cores, mTiles * nTiles)
 max_tiles_per_core  = ceil(mTiles * nTiles / cores_used)
 dram_read_bytes     = mTiles * nTiles * kTiles * 2 * 2048
 dram_write_bytes    = mTiles * nTiles * 2048
+```
+
+The fused fields are mapping independent:
+
+```
 fused_stage_tiles   = max_rows_per_core * kTiles
 max_rows_per_core   = min(mTiles, floor((max_tiles_per_core - 1) / nTiles) + 2)
 fused_feasible      = 2 * fused_stage_tiles + 2 * kTiles + 3 <= cb budget tiles
 ```
 
-The read figure is an upper bound. It counts a tile read per output tile that needs it, so a weight tile shared by many output tiles is counted many times. The fused path stages a core's activation rows in L1 once, so its activation reads are not multiplied; its weight reads still are. Both numbers are byte arithmetic from the shapes, the grid, and the 2,048-byte tile, and both are labelled projected.
+For `examples/matmul.mlir` on n150, blocked-reuse reads 3,145,728 bytes: 1,024 activation tiles replicated across 8 column blocks plus 512 weight tiles multicast once. The previous range mapping projected 16,777,216 bytes. The planner's strategy projection is 1,310,720 bytes, so the remaining gap is the activation replication. Every figure is byte arithmetic from the shapes, the grid, and the 2,048-byte tile, and every figure is labelled projected.
 
-The gap between the two blocks is the honest cost of the naive mapping. When multicast and reuse land, the `emission` block shrinks toward the `noc` block and the two stay side by side until the emitted program actually matches the strategy.
+The fused MLP chain records the same `blocked-reuse` mapping with MLP semantics. `fused_stage_tiles` is `rowsPerCore * hTiles`, the GELU output rows the core keeps in L1 between the two matmuls, and `fused_feasible` is the footprint of the twelve-buffer chain. For `examples/mlp_block_small.mlir` on n150 the plan records 16 cores, `fused_stage_tiles` 4, 1,081,344 projected read bytes, and 32,768 projected write bytes. The first weight block is resident on every used core and the second is staged per column block, so the emitted MLP reads repeat both weight blocks across cores. The planner's `noc` block for the same plan is 65,536 read bytes and 32,768 write bytes; the difference is the emitted chain's weight and bias replication, not a measurement.
 
 ## What the model leaves out
 

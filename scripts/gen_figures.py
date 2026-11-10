@@ -401,10 +401,12 @@ def verification_scene(rng: random.Random) -> dict:
             [
                 "spec values against\nunit tests",
                 "IR against\nlit and FileCheck",
-                "TTIR in and out with\nthe pinned ttmlir parser",
+                "TTIR in, normalize,\nand out with the pin",
                 "emitted host links\nagainst release headers",
                 "matmul on the planned\ngrid under ttsim",
+                "weight multicast\nunder ttsim",
                 "fused RMSNorm matmul\nunder ttsim",
+                "fused MLP\nunder ttsim",
                 "reference model vs\nNumPy golden",
             ],
         ),
@@ -432,23 +434,23 @@ def verification_scene(rng: random.Random) -> dict:
     ]
     for title, x, role, items in columns:
         els.append(text(rng, title, x, 96, FONT_NOTE, MUTED))
-        y = 124
+        y = 116
         for item in items:
             shape, bound = box(rng, item, x, y, role=role, width=380, font=FONT_NOTE)
             els.extend([shape, bound])
-            y += 110
+            y += 92
 
     els.append(
         text(
             rng,
             "the red column is not a gap in the report: it is the part no CPU-only run can claim",
             MARGIN,
-            900,
+            958,
             FONT_NOTE,
             MUTED,
         )
     )
-    return scene(els, 1520, 980)
+    return scene(els, 1520, 1000)
 
 
 def main() -> None:

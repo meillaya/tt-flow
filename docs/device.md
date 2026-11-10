@@ -74,11 +74,13 @@ ttsim loads `soc_descriptor.yaml` from the directory that holds `libttsim_wh.so`
 
 | Example | Shape | Grid use | PCC |
 |---|---|---|---|
-| `examples/matmul.mlir` | M=256, N=1024, K=512 | 64 of 64 cores, 4 output tiles each | 0.9890072 |
-| `examples/matmul_small.mlir` | M=128, N=128, K=64 | 16 of 64 cores, 1 output tile each | 0.999301 |
-| `examples/rmsnorm_matmul_small.mlir` | M=128, N=256, K=128, fused RMSNorm | 32 of 64 cores, 1 output tile each | 0.9993997 |
+| `examples/matmul.mlir` | M=256, N=1024, K=512 | blocked-reuse, B multicast, 64 of 64 cores | 0.9890072 |
+| `examples/matmul_padded.mlir` | M=100, N=100, K=50, zero-padded to tiles | blocked-reuse, B multicast, 16 of 64 cores | 0.9999824 |
+| `examples/matmul_small.mlir` | M=128, N=128, K=64 | blocked-reuse, B multicast, 16 of 64 cores | 0.999301 |
+| `examples/rmsnorm_matmul_small.mlir` | M=128, N=256, K=128, fused RMSNorm | fused staging, 32 of 64 cores | 0.9993997 |
+| `examples/mlp_block_small.mlir` | M=K=H=N=128, full fused MLP | blocked-reuse, 16 of 64 cores | 0.999981 |
 
-All three printed `{"status":"pass","backend":"ttsim"}` and exited 0. The second example covers the idle-core and uneven-split paths. The third stages the activation rows in L1, normalizes them in the compute kernel, and feeds the matmul from the normalized buffer; the large fused `examples/rmsnorm_matmul.mlir` is rejected with a diagnostic that names its 256 staged tiles, 128 weight tiles, 128 gamma tiles, and the 700 available tiles per core. Run one example directly with:
+All five printed `{"status":"pass","backend":"ttsim"}` and exited 0. The padded example generates the declared 100x50 and 50x100 operands, zero-pads them to whole tiles, and runs the golden over the padded operands, so the padding path is exercised rather than assumed. The small example covers the idle-core and uneven-split paths. The fused RMSNorm example stages the activation rows in L1, normalizes them in the compute kernel, and feeds the matmul from the normalized buffer; the large fused `examples/rmsnorm_matmul.mlir` is rejected with a diagnostic that names its 256 staged tiles, 128 weight tiles, 128 gamma tiles, and the 700 available tiles per core. The MLP example runs the full chain in one kernel and keeps the GELU output in L1 between the two matmuls; the large `examples/mlp_block.mlir` is rejected with its 3,072 intermediate tiles and 59,284 total tiles against 700 available. Run one example directly with:
 
 ```sh
 devenv shell -- bash scripts/build_generated.sh examples/matmul.mlir

@@ -41,15 +41,15 @@ The emission block describes the program the Metalium emitter writes. It is sepa
 
 | Field | Type | Meaning |
 |---|---|---|
-| `mapping` | string | Mapping name. The only supported value is `output-tile-ranges`. |
+| `mapping` | string | `blocked-reuse` or `output-tile-ranges`. The emitter selects `blocked-reuse` when the core's resident activation and weight blocks fit the per-core circular-buffer budget, and keeps `output-tile-ranges` otherwise. The fused RMSNorm+MatMul path uses `output-tile-ranges`. The fused MLP chain reuses `blocked-reuse` with MLP semantics. |
 | `cores_used` | integer | `min(grid cores, mTiles * nTiles)`. |
 | `max_tiles_per_core` | integer | `ceil(mTiles * nTiles / cores_used)`. |
-| `dram_read_bytes` | integer | Upper bound: `mTiles * nTiles * kTiles * 2 * 2048`, one activation tile and one weight tile per output tile per reduction step. |
+| `dram_read_bytes` | integer | Projected reads for the selected mapping. `blocked-reuse`: `kTiles * usedCols * sum(rows per used row block) + kTiles * weightReplication * sum(cols per used column block)` tiles. `output-tile-ranges`: `mTiles * nTiles * kTiles * 2` tiles. |
 | `dram_write_bytes` | integer | `mTiles * nTiles * 2048`, one output tile each. |
-| `fused_stage_tiles` | integer | `max_rows_per_core * kTiles`, the activation tiles a core stages in L1 for the fused path. |
-| `fused_feasible` | boolean | True when `2 * fused_stage_tiles + 2 * kTiles + 3` tiles fit the per-core circular-buffer budget. The count covers the staged activation, the normalized activation, the weight, the gamma, one scaler tile, and two output tiles. |
+| `fused_stage_tiles` | integer | `max_rows_per_core * kTiles` for the fused RMSNorm path, the activation tiles a core stages in L1. For the fused MLP chain it is `rowsPerCore * hTiles`, the GELU output rows a core keeps in L1 between the matmuls. |
+| `fused_feasible` | boolean | True when the fused variant's buffers fit the per-core circular-buffer budget. The fused RMSNorm path needs `2 * fused_stage_tiles + 2 * kTiles + 3` tiles: staged activation, normalized activation, weight, gamma, one scaler, and two output. The fused MLP chain needs its twelve buffers, which the emitter prints when the chain does not fit. |
 
-The values are projections of the emitted access pattern. They are expected to be larger than the planned NoC traffic, because the plan models weight multicast and the emitted program does not. The report labels both, and `docs/performance.md` explains where each is used.
+The values are projections of the emitted access pattern. Under `blocked-reuse` the activation row block is read once per used column block and the weight column block is read once and multicast down the used row blocks when the plan uses more than one row block. The activation replication is the one read the mapping cannot remove without an activation multicast, so the emitted reads stay above the planner's NoC projection. The report labels both, and `docs/performance.md` explains where each is used.
 
 ## Circular-buffer roles
 
@@ -58,7 +58,7 @@ The allocation is an ordered array. The Metalium emitter and the lowering pass r
 - Unfused matmul plan: `[activation, weight, output]`, default indices `c_0`, `c_1`, `c_16`.
 - Fused RMSNorm plan: `[activation stage, weight, gamma, scaler, normalized activation, output]`, default indices `c_0`, `c_1`, `c_2`, `c_3`, `c_4`, `c_16`.
 
-A fused plan whose staged activation does not fit the budget is still a valid plan. Its emission block carries `fused_feasible: false`, and the emitter refuses to write a project with a diagnostic that prints the required and available tile counts.
+A fused plan whose staging does not fit the budget is still a valid plan. Its emission block carries `fused_feasible: false`, and the emitter refuses to write a project with a diagnostic that prints the required and available tile counts. `examples/rmsnorm_matmul.mlir` and `examples/mlp_block.mlir` are the recorded infeasible cases.
 
 ## Nested objects
 

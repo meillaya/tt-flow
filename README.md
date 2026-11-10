@@ -51,6 +51,18 @@ devenv shell -- build/bin/tensixflow-opt \
 The default device is n150; n300, p100a, and p150a are accepted too. Every figure in the output
 comes from the published device data in `spec/devices.json`.
 
+Layout-encoded TTIR, including the text the emitter prints, goes through the normalizer first:
+
+```sh
+devenv shell -- bash scripts/normalize_ttir.sh layout.mlir -o bare.mlir
+devenv shell -- build/bin/tensixflow-opt --allow-unregistered-dialect \
+  --tensixflow-import-ttir --tensixflow-plan-noc-sharding bare.mlir
+```
+
+The normalizer parses with the pinned tt-mlir bindings, drops the layout encodings and device
+attributes the importer does not link, and leaves the function bodies and semantic attributes
+unchanged.
+
 ## Devices
 
 | Device | Architecture | Compute grid | L1 per core | DRAM |
@@ -87,15 +99,21 @@ Runs recorded on this machine, with no card:
 
 | Example | Shape | Grid use | PCC |
 |---|---|---|---|
-| `examples/matmul.mlir` | 256x512x1024 bf16 | 64 of 64 cores | 0.9890072 |
+| `examples/matmul.mlir` | 256x512x1024 bf16 | 64 of 64 cores, 2D blocks | 0.9890072 |
+| `examples/matmul_padded.mlir` | 100x50x100 bf16, padded to tiles | 16 of 64 cores | 0.9999824 |
 | `examples/matmul_small.mlir` | 128x128 output, K=64, bf16 | 16 of 64 cores | 0.999301 |
 | `examples/rmsnorm_matmul_small.mlir` | 128x256 output, K=128, bf16, fused RMSNorm | 32 of 64 cores | 0.9993997 |
+| `examples/mlp_block_small.mlir` | 128x128x128x128 bf16, full fused MLP | 16 of 64 cores | 0.999981 |
 
-A fused RMSNorm graph is emitted when its activation staging fits the per-core L1 budget; the
-plan JSON records that check as `fused_feasible` and the emitter refuses an infeasible plan with
-the tile arithmetic in the message. The emits are unicast: every output tile reads the operand
-tiles it needs from DRAM, so a shared tile is read more than once. The plan reports both the
-strategy projection and the projection of that emitted access pattern.
+The matmul path uses the `blocked-reuse` mapping when the core's resident blocks fit L1: each
+core stages its activation row block and weight column block once, and the weight column block
+is multicast down the grid's row blocks. The activation row block is still read once per column
+block, so activation replication remains. A fused RMSNorm graph is emitted when its activation
+staging fits the per-core L1 budget; the plan JSON records that check as `fused_feasible` and
+the emitter refuses an infeasible plan with the tile arithmetic in the message. The full MLP
+chain is emitted the same way: RMSNorm, the first matmul with bias and GELU, the second matmul,
+and the residual add run in one kernel, with the GELU output held in L1 between the matmuls.
+The plan reports both the strategy projection and the projection of the emitted access pattern.
 
 `scripts/run_generated.sh --device` runs the same program on a card. The device path is written
 against the pinned release and has not been executed on silicon.
@@ -119,11 +137,13 @@ Tenstorrent hardware.
 
 Current limits, stated plainly:
 
-- Reads are unicast. The planner projects weight multicast and reuse, and the emitted program
-  does not implement either yet, so the emitted-path traffic is higher than the strategy
-  projection.
-- The full MLP chain is planned and reported, not emitted. Fused RMSNorm+MatMul emission is
-  limited to shapes whose activation staging fits the per-core L1 budget.
+- Weight multicast and reuse are emitted; activation multicast is not, so the activation row
+  block is read once per used column block and the emitted-path traffic stays above the
+  strategy projection by that replication.
+- Fused emission is limited to shapes whose L1 staging fits the per-core budget. The large
+  `examples/mlp_block.mlir` is analysis-only and is rejected with the intermediate and total
+  tile counts; the MLP emitter keeps the first weight block resident on every used core and
+  reads the second per row block, so MLP weight traffic is not yet multicast.
 - Cost figures are a roofline projection. Nothing in this repository measures device time.
 - The reference model checks the compiler's schedule semantics against a NumPy golden. It is not
   a model of the device.
