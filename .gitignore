@@ -21,3 +21,6 @@ __pycache__/
 
 # Baseline and generated build trees
 build-*/
+
+# Local device acceptance report; the table is committed in docs/device.md
+/hardware-acceptance.md

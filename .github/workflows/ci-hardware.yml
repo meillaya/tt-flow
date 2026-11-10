@@ -32,8 +32,17 @@ jobs:
       - name: Fetch pinned tt-metal release artifacts
         run: devenv shell -- bash scripts/fetch_tt_metal.sh
 
-      - name: Build the emitted project against the pinned runtime
-        run: devenv shell -- bash scripts/build_generated.sh
+      - name: Run the acceptance script on every example
+        # The script builds the compiler and each emitted project when needed,
+        # runs all five examples with --device, and prints the Markdown table
+        # for docs/device.md on stdout. Any failed example fails this job.
+        run: |
+          set -o pipefail
+          devenv shell -- bash scripts/hardware_acceptance.sh | tee hardware-acceptance.md
 
-      - name: Run on the device and check numerics
-        run: devenv shell -- bash scripts/run_generated.sh --device
+      - name: Append the acceptance table to the job summary
+        if: always()
+        run: |
+          if [ -s hardware-acceptance.md ]; then
+            cat hardware-acceptance.md >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -97,13 +97,25 @@ devenv shell -- bash scripts/run_generated.sh --device
 
 The device backend requires `scripts/device_probe.py` to confirm a card and runs without the simulator variables. The program computes deterministic inputs, a CPU reference matmul, then the emitted kernels, and prints the PCC between the device result and the reference. The program's own check accepts a run when the PCC reaches 0.97, and `scripts/run_generated.sh` reports a pass only when the program prints its pass status. A device run is untested here. With no card, `--device` exits 2 with a message that names the probe and points at the default ttsim backend; it never falls back silently.
 
-### 6. Record the result (untested)
+### 6. Record the acceptance run (untested, needs a card)
 
-A device run writes one JSON object: the backend, the status, and the PCC. Add the run to the table below when a card is available. A CPU simulator run does not go in this table.
+The acceptance script builds the compiler when `tensixflow-opt` is missing. It then emits and builds all five examples, runs each with `--device`, and prints one Markdown table on stdout. Progress and failure logs go to stderr.
 
-| Date | Device | Backend | Status | PCC | Notes |
-|---|---|---|---|---|---|
-| - | none | - | - | - | no card on the development machine |
+```sh
+devenv shell -- bash scripts/hardware_acceptance.sh > hardware-acceptance.md
+```
+
+The probe from step 2 runs before any build work. A host without a card fails before the compiler is built. Emission is fixed to n150: the script exits 2 when the probe matches another device, because `scripts/build_generated.sh` passes `--tensixflow-device=n150`.
+
+For an acceptance run, the script exits 0 only when all five examples pass. It exits 1 when an example fails to build or run. It exits 2 before any build when the probe does not confirm an n150 card, the pinned artifacts are missing, the link flags are unset, or the compiler build fails. The date column records the run date in UTC.
+
+Replace the placeholder row with the rows the script prints, then commit the docs update:
+
+| Date | Device | Example | Backend | Status | PCC | Notes |
+|---|---|---|---|---|---|---|
+| - | none | - | - | - | - | no card on the development machine |
+
+The hardware CI job runs the same script on the self-hosted runner and appends the table to the job summary.
 
 ## Environment note
 

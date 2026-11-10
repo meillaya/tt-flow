@@ -59,4 +59,4 @@ Silicon behavior in any form. No kernel from this project has run on a card. tts
 
 Activation multicast. The emitted matmul reuses its weight column block and multicasts it down the used row blocks, which is checked under ttsim. The activation row block is still read once per used column block, so activation replication remains. The plan's `noc` block counts the activation once; the `emission` block counts the emitted reads. The two differ by that replication on purpose.
 
-The device backend. `scripts/device_probe.py` exits 2 on this machine because there is no card. Its success path, the `--device` backend, and the device JSON result are untested.
+The device backend. `scripts/device_probe.py` exits 2 on this machine because there is no card. Its success path, the `--device` backend, and the device JSON result are untested. The card path of `scripts/hardware_acceptance.sh`, and the table it prints for `docs/device.md`, are untested. On this machine the script stops at the probe with exit 2.
