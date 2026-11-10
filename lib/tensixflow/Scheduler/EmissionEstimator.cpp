@@ -7,6 +7,8 @@
 
 #include "EmissionEstimator.h"
 
+#include "CBAllocator.h"
+
 #include <algorithm>
 
 namespace mlir {
@@ -102,6 +104,51 @@ EmissionPlan estimateEmission(const EmissionInputs &inputs) {
   const int64_t rangeMaxTilesPerCore =
       ceilDiv(totalOutputTiles, rangeCoresUsed);
 
+  const int64_t cbBudgetTiles = floorDiv(inputs.cbBudgetBytes, tileBytes);
+
+  // The fused MLP emitter assigns the same 2D block as blocked reuse and keeps
+  // the GELU intermediate rows in L1. Its feasibility is the full twelve-buffer
+  // footprint, not the matmul's three-buffer selector, so it is computed before
+  // the matmul mapping choice.
+  if (inputs.fusedMlp) {
+    const BlockAssignment block = planBlockAssignment(inputs);
+    if (block.rowsPerCore <= 0 || block.colsPerCore <= 0 ||
+        inputs.hTiles <= 0) {
+      plan.fusedFeasible = false;
+      return plan;
+    }
+    plan.mapping = kBlockedReuseMapping;
+    plan.coresUsed = block.usedRows * block.usedCols;
+    plan.maxTilesPerCore = block.maxTilesPerCore;
+    plan.fusedStageTiles = block.rowsPerCore * inputs.hTiles;
+
+    const int64_t footprint = fusedMlpCbTileCount(
+        inputs.kTiles, inputs.hTiles, block.rowsPerCore, block.colsPerCore);
+    plan.fusedFeasible = footprint > 0 && footprint <= cbBudgetTiles;
+
+    // Reads: the activation rows are replicated across the used column blocks,
+    // both weight blocks are read on every used core (no cross-core reuse yet),
+    // the residual and output tiles are read and written once each.
+    int64_t rowTileSum = 0;
+    for (int64_t rowBlock = 0; rowBlock < block.usedRows; ++rowBlock) {
+      rowTileSum += rowBlockSize(inputs, rowBlock);
+    }
+    int64_t colTileSum = 0;
+    for (int64_t colBlock = 0; colBlock < block.usedCols; ++colBlock) {
+      colTileSum += colBlockSize(inputs, colBlock);
+    }
+    const int64_t usedCoreCount = block.usedRows * block.usedCols;
+    int64_t readTiles = inputs.kTiles * block.usedCols * rowTileSum;
+    readTiles += inputs.kTiles * inputs.hTiles * usedCoreCount;
+    readTiles += inputs.hTiles * block.usedRows * colTileSum;
+    readTiles += inputs.hTiles * usedCoreCount;
+    readTiles += inputs.kTiles * usedCoreCount;
+    readTiles += totalOutputTiles;
+    plan.dramReadBytes = readTiles * tileBytes;
+    plan.dramWriteBytes = totalOutputTiles * tileBytes;
+    return plan;
+  }
+
   // Blocked reuse: stage each used row block and column block once and
   // accumulate every output tile of the block from L1. The activation is
   // replicated across the used column blocks and the weight across the used row
@@ -148,7 +195,6 @@ EmissionPlan estimateEmission(const EmissionInputs &inputs) {
   // The fused allocation holds the staged activation (stage tiles), the
   // normalized activation (stage tiles), the weight (kTiles), the gamma
   // (kTiles), one scaler tile, and two output tiles.
-  const int64_t cbBudgetTiles = floorDiv(inputs.cbBudgetBytes, tileBytes);
   plan.fusedFeasible =
       2 * plan.fusedStageTiles + 2 * inputs.kTiles + 3 <= cbBudgetTiles;
   return plan;

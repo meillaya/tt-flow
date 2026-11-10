@@ -97,6 +97,7 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
                        TensixflowEmissionAttr emission,
                        const MatmulEmission &mapping, llvm::raw_ostream &os) {
   std::optional<MatmulShape> shape = readMatmulShape(kernel);
+  std::optional<MlpShape> mlpShape = readMlpShape(kernel);
   llvm::SmallVector<CbSlot> slots = readCbSlots(schedule);
 
   // The README reports the circular buffers the emitted program actually
@@ -118,8 +119,38 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
      << " Do not edit.\n\n";
 
   const bool fused = isFusedRmsnormMatmul(schedule);
+  const bool mlp = isFusedMlp(schedule) && mlpShape.has_value();
   os << "## What the program computes\n\n";
-  if (fused) {
+  if (mlp) {
+    os << "Multi-core bf16 fused MLP block on a " << emission.getCoresUsed()
+       << "-core 2D block grid. Each core owns " << mlpShape->mTiles()
+       << " activation-row tiles over " << mlpShape->nTiles()
+       << " output-tile columns in blocks of rowsPerCore x colsPerCore. Per "
+          "activation row it normalizes the row in L1 (RMSNorm with a reduce and "
+          "a reciprocal square root), runs the first matmul from a resident "
+          "weight block, adds the bias, applies the accurate GELU, and packs the "
+          "bf16 intermediate into an L1 circular buffer. After the row block it "
+          "runs the second matmul from that L1 intermediate, adds the residual, "
+          "and writes the output. The GELU intermediate never reaches DRAM. The "
+          "host program fills deterministic inputs, assigns the 2D blocks, "
+          "compares the device result against a CPU reference that runs the same "
+          "chain with fp32 math and bf16 rounds, and prints the Pearson "
+          "correlation coefficient.\n\n";
+    os << "| Chain | Value |\n|---|---|\n";
+    os << "| Activation | " << mlpShape->m << " x " << mlpShape->k
+       << " (M x K) |\n";
+    os << "| Hidden | " << mlpShape->h << " (H) |\n";
+    os << "| Output | " << mlpShape->m << " x " << mlpShape->n
+       << " (M x N) |\n";
+    os << "| Tiles (M x K -> H -> N) | " << mlpShape->mTiles() << " x "
+       << mlpShape->kTiles() << " -> " << mlpShape->hTiles() << " -> "
+       << mlpShape->nTiles() << " |\n";
+    os << "| Used block grid | " << mapping.usedRows << " x "
+       << mapping.usedCols << " row and column blocks |\n";
+    os << "| Per-core block | " << mapping.rowsPerCore
+       << " activation rows x " << mapping.colsPerCore
+       << " output column tiles |\n\n";
+  } else if (fused) {
     os << "Multi-core bf16 fused RMSNorm + MatMul structured like the pinned\n";
     os << "tt-metal v0.82.0-rc2 matmul examples. Each core stages the activation\n";
     os << "rows of its output tiles once in L1, normalizes them there, and runs the\n";
@@ -172,7 +203,22 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
   os << "\n";
 
   os << "## Emitted path\n\n";
-  if (mapping.multicastB) {
+  if (mlp) {
+    os << "The host creates the reader, compute, and writer kernels on the used\n";
+    os << mapping.usedRows << " x " << mapping.usedCols
+       << " row and column block range. Each core owns up to "
+       << mapping.rowsPerCore << " activation rows and " << mapping.colsPerCore
+       << " output column tiles;\n";
+    os << "the last used row or column block is smaller when the tile geometry\n";
+    os << "does not divide evenly. The reader stages one activation row, the gamma and\n";
+    os << "scaler tiles, the first weight block, the bias tiles, and the core's\n";
+    os << "second weight block once, then streams one residual row and the next\n";
+    os << "activation row per row iteration. The compute kernel normalizes each\n";
+    os << "activation row in L1, runs the first matmul with the bias and the\n";
+    os << "accurate GELU, keeps the bf16 GELU intermediate in L1, runs the\n";
+    os << "second matmul from that intermediate, and adds the residual. The\n";
+    os << "mapping is `" << emission.getMapping().getValue() << "`.\n\n";
+  } else if (mapping.multicastB) {
     os << "The host creates the reader, compute, and writer kernels on the used\n";
     os << mapping.usedRows << " x " << mapping.usedCols
        << " row and column block range. Each core owns a\n";
@@ -180,7 +226,9 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
     os << "The host creates the reader, compute, and writer kernels on the plan's\n";
     os << schedule.getGridY() << " x " << schedule.getGridX() << " core range. ";
   }
-  if (mapping.blockedReuse()) {
+  if (mlp) {
+    // The fused MLP paragraph above already describes the mapping.
+  } else if (mapping.blockedReuse()) {
     os << "Each core owns a\n";
     os << mapping.rowsPerCore << " x " << mapping.colsPerCore
        << " tile block of the output, assigned in 2D over the grid; the last\n";
@@ -215,7 +263,14 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
   os << "| Fused stage tiles | " << emission.getFusedStageTiles() << " |\n";
   os << "| Fused variant feasible | "
      << (emission.getFusedFeasible() ? "true" : "false") << " |\n\n";
-  if (mapping.blockedReuse() && mapping.multicastB) {
+  if (mlp) {
+    os << "The reader is unicast. The activation rows are replicated across the\n";
+    os << "used column blocks, the first weight block is read on every used core,\n";
+    os << "and the second weight block is read by every used row block; the\n";
+    os << "residual and output tiles are read and written once each. The GELU\n";
+    os << "intermediate never reaches DRAM. Every number in this section is\n";
+    os << "projected from static shapes and is not a measured count.\n\n";
+  } else if (mapping.blockedReuse() && mapping.multicastB) {
     os << "The activation row block is read unicast and replicated across the\n";
     os << "used column blocks. The weight column block is read once per used\n";
     os << "column block and multicast down the used row blocks, so the weight\n";
@@ -245,7 +300,16 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
   os << "- `host.cpp` builds the program, allocates the DRAM buffers, sets the\n";
   os << "  circular buffers and runtime arguments, enqueues the workload, and runs\n";
   os << "  the self-check.\n";
-  if (fused) {
+  if (mlp) {
+    os << "- `kernels/reader.cpp` stages one activation row, the gamma and\n";
+    os << "  scaler tiles, the first weight block, the bias tiles, and the core's\n";
+    os << "  second weight block once, then streams one residual row and the next\n";
+    os << "  activation row per row iteration.\n";
+    os << "- `kernels/compute.cpp` normalizes each activation row in L1, runs the\n";
+    os << "  first matmul with the bias and the accurate GELU, keeps the bf16\n";
+    os << "  GELU intermediate in L1, runs the second matmul from that L1\n";
+    os << "  intermediate, adds the residual, and packs bf16 output tiles.\n";
+  } else if (fused) {
     os << "- `kernels/reader.cpp` stages the core's activation rows, the gamma\n";
     os << "  tiles, and the reduce scaler, then streams the weight tiles into the\n";
     os << "  input circular buffers over the NoC.\n";
@@ -279,7 +343,16 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
 
   os << "## Circular buffers\n\n";
   os << "| Buffer | tt::CBIndex | Depth (tiles) | Bytes |\n|---|---|---|---|\n";
-  if (fused) {
+  if (mlp) {
+    static constexpr const char *kMlpRoleNames[] = {
+        "activation row", "squared row",  "inverse RMS", "normalized row",
+        "weight1 block",  "gamma",        "reduce scaler", "bias",
+        "weight2 block",  "residual row", "intermediate", "output"};
+    for (std::size_t i = 0; i < slots.size() && i < kMlpCbSlotCount; ++i) {
+      os << "| " << kMlpRoleNames[i] << " | c_" << slots[i].index << " | "
+         << slots[i].depth << " | " << slots[i].bytes() << " |\n";
+    }
+  } else if (fused) {
     static constexpr const char *kFusedRoleNames[] = {
         "activation stage", "weight", "gamma",
         "reduce scaler",    "normalized", "output"};
@@ -319,7 +392,19 @@ void emitProjectReadme(TensixflowSchedKernelOp kernel,
   os << "the PCC the program reported.\n\n";
 
   os << "## Limits\n\n";
-  if (fused) {
+  if (mlp) {
+    os << "- The emitted MLP keeps one core's activation row block, both weight\n";
+    os << "  blocks, the bias, and the GELU intermediate rows in L1. The\n";
+    os << "  feasibility gate sizes that footprint against the per-core\n";
+    os << "  circular-buffer budget, so a wide hidden dimension does not emit.\n";
+    os << "- The first weight block is staged on every used core and the second\n";
+    os << "  weight block is read by every used row block, so the weight traffic\n";
+    os << "  is replicated. There is no weight multicast and no cross-core reuse\n";
+    os << "  yet; the projected DRAM read bytes are an upper bound.\n";
+    os << "- The GELU uses the accurate fp32 SFPU path, not the default fast\n";
+    os << "  approximation, so the emitted result matches the exact-erf GELU in\n";
+    os << "  the host reference.\n";
+  } else if (fused) {
     os << "- The fused compute holds one output tile per output column block in\n";
     os << "  the destination registers, so the plan is limited to eight output\n";
     os << "  column tiles. The emitter names the bound in its diagnostic.\n";

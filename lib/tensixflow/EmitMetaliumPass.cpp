@@ -176,6 +176,19 @@ public:
 
     llvm::StringRef deviceName = resolveDeviceName(module);
     std::optional<MatmulShape> shape = readMatmulShape(kernel);
+    std::optional<MlpShape> mlpShape;
+    if (isFusedMlp(schedule)) {
+      mlpShape = readMlpShape(kernel);
+      if (!mlpShape) {
+        kernel.emitError()
+            << "requires the " << kFusedMlpShapeAttrName << " attribute on "
+            << kernel.getSymName()
+            << " for a fused MLP plan; run --tensixflow-lower-to-ttkernel to "
+               "stamp it";
+        signalPassFailure();
+        return;
+      }
+    }
     TensixflowScheduleAttr effectiveSchedule = schedule;
 
     // Recompute the mapping selector from the module's own geometry and record
@@ -195,6 +208,11 @@ public:
     projectionInputs.cbBudgetBytes =
         deviceSpec->cbBudget(device::kDefaultL1ReserveBytes);
     projectionInputs.fused = isFusedPlan(schedule);
+    if (mlpShape) {
+      projectionInputs.fusedMlp = true;
+      projectionInputs.hTiles = mlpShape->hTiles();
+      projectionInputs.nTiles = mlpShape->nTiles();
+    }
     const scheduler::EmissionPlan projection =
         scheduler::estimateEmission(projectionInputs);
     if (recordedMapping != projection.mapping) {
@@ -208,7 +226,8 @@ public:
     }
 
     // Blocked reuse sizes its resident buffers from the 2D block geometry; the
-    // CB indices still come from the plan allocation the emitters read.
+    // CB indices still come from the plan allocation the emitters read. The
+    // fused MLP emitter uses the same 2D block geometry with its own buffer set.
     MatmulEmission mapping;
     if (recordedMapping == kBlockedReuseMapping) {
       const scheduler::BlockAssignment block =
@@ -230,86 +249,153 @@ public:
     // and re-stamps the schedule copy the emitters read. The module keeps the
     // planning allocation so the plan JSON stays the planning artifact.
     if (isFusedPlan(schedule)) {
-      if (!isFusedRmsnormMatmul(schedule)) {
+      if (isFusedMlp(schedule)) {
+        const device::DeviceSpec *spec = deviceSpec;
+        const int64_t budgetTiles =
+            spec->cbBudget(device::kDefaultL1ReserveBytes) / spec->tileBytes;
+        const scheduler::BlockAssignment block =
+            scheduler::planBlockAssignment(projectionInputs);
+        const int64_t stageTiles = emission.getFusedStageTiles();
+        const int64_t neededTiles = scheduler::fusedMlpCbTileCount(
+            mlpShape->kTiles(), mlpShape->hTiles(), block.rowsPerCore,
+            block.colsPerCore);
+
+        // The plan's emission block is the first gate: the planning pass
+        // records whether the MLP footprint fits the per-core budget. The
+        // diagnostic reports the recorded intermediate staging and the
+        // recomputed footprint against the budget it was compared with.
+        if (!emission.getFusedFeasible()) {
+          kernel.emitError()
+              << "the fused plan '" << fusionKind(schedule)
+              << "' is not emittable: it keeps " << stageTiles
+              << " intermediate (GELU output) circular-buffer tiles in L1, "
+                 "and the whole chain needs "
+              << neededTiles
+              << " circular-buffer tiles per core (activation row, squares, "
+                 "inverse RMS, normalized row, both weight blocks, gamma, "
+                 "scaler, bias, residual row, intermediate rows, output) "
+                 "against "
+              << budgetTiles << " available tiles per core on '" << spec->name
+              << "', so the emitted-path estimate marks the fused variant "
+                 "infeasible. Emit a smaller MLP from "
+                 "examples/mlp_block_small.mlir, or keep the fused plan as a "
+                 "planning result: run tensixflow-opt through "
+                 "--tensixflow-plan-noc-sharding, pipe the module into "
+                 "tensixflow-translate --tensixflow-to-json, then render it "
+                 "with tensixflow-report.";
+          signalPassFailure();
+          return;
+        }
+
+        scheduler::CBAllocation fused = scheduler::allocateFusedMlpCBs(
+            *spec, mlpShape->kTiles(), mlpShape->hTiles(), block.rowsPerCore,
+            block.colsPerCore);
+        if (!fused.feasible) {
+          kernel.emitError()
+              << "the fused plan '" << fusionKind(schedule) << "' needs "
+              << neededTiles
+              << " circular-buffer tiles per core against " << budgetTiles
+              << " available tiles per core on '" << spec->name
+              << "', so the fused MLP program cannot be emitted. Emit a "
+                 "smaller MLP from examples/mlp_block_small.mlir, or use the "
+                 "plan and report path.";
+          signalPassFailure();
+          return;
+        }
+
+        mapping.mapping = MatmulMapping::BlockedReuse;
+        mapping.rowsPerCore = block.rowsPerCore;
+        mapping.colsPerCore = block.colsPerCore;
+        mapping.usedRows = block.usedRows;
+        mapping.usedCols = block.usedCols;
+        mapping.in0DepthTiles = block.rowsPerCore * mlpShape->kTiles();
+        mapping.in1DepthTiles = block.colsPerCore * mlpShape->hTiles();
+        // The fused MLP reader stages its own blocks unicast; the blocked-reuse
+        // selector above sized the resident blocks only.
+        mapping.multicastB = false;
+        effectiveSchedule =
+            withFusedCbAllocation(&getContext(), schedule, fused);
+      } else if (!isFusedRmsnormMatmul(schedule)) {
         kernel.emitError()
             << "cannot emit a TT-Metalium program for the fused plan '"
             << fusionKind(schedule) << "'. The emitter supports the '"
-            << kFusedRmsnormMatmulKind
-            << "' pattern (an RMSNorm prologue followed by a matmul; see "
-               "examples/rmsnorm_matmul_small.mlir). For another fused graph, "
-               "emit the matmul-only path from examples/matmul.mlir, or use "
-               "the plan and report path: run the planning passes, pipe the "
-               "module into tensixflow-translate --tensixflow-to-json, then "
-               "render it with tensixflow-report.";
+            << kFusedRmsnormMatmulKind << "' and '" << kFusedMlpKind
+            << "' patterns (an RMSNorm prologue followed by a matmul, and the "
+               "full MLP chain; see examples/rmsnorm_matmul_small.mlir and "
+               "examples/mlp_block_small.mlir). For another fused graph, emit "
+               "the matmul-only path from examples/matmul.mlir, or use the "
+               "plan and report path: run the planning passes, pipe the module "
+               "into tensixflow-translate --tensixflow-to-json, then render it "
+               "with tensixflow-report.";
         signalPassFailure();
         return;
+      } else {
+        const device::DeviceSpec *spec = deviceSpec;
+        const int64_t budgetTiles =
+            spec->cbBudget(device::kDefaultL1ReserveBytes) / spec->tileBytes;
+        const int64_t kTiles = shape->kTiles();
+        const int64_t stageTiles = emission.getFusedStageTiles();
+
+        // The plan's emission block is the first gate: the planning pass records
+        // whether the fused staging fits the per-core budget, including the
+        // gamma tiles and the scaler. The emitter reports the recorded staging
+        // and the budget it was compared against rather than recomputing the
+        // estimate, so the diagnostic cannot disagree with the plan.
+        if (!emission.getFusedFeasible()) {
+          kernel.emitError()
+              << "the fused plan '" << fusionKind(schedule)
+              << "' is not emittable: it stages " << stageTiles
+              << " circular-buffer tiles of activation rows plus " << kTiles
+              << " weight tiles and " << kTiles << " gamma tiles, against "
+              << budgetTiles << " available tiles per core on '" << spec->name
+              << "', and the emitted-path estimate marks the fused variant "
+                 "infeasible. Emit the matmul-only path from examples/matmul.mlir, "
+                 "or keep the fused plan as a planning result: run tensixflow-opt "
+                 "through --tensixflow-plan-noc-sharding, pipe the module into "
+                 "tensixflow-translate --tensixflow-to-json, then render it with "
+                 "tensixflow-report.";
+          signalPassFailure();
+          return;
+        }
+
+        scheduler::CBAllocation fused =
+            scheduler::allocateFusedCBs(*spec, kTiles, stageTiles);
+        const int64_t neededTiles = scheduler::fusedCbTileCount(kTiles, stageTiles);
+        if (!fused.feasible) {
+          kernel.emitError()
+              << "the fused plan '" << fusionKind(schedule) << "' needs "
+              << neededTiles << " circular-buffer tiles (2 * " << stageTiles
+              << " staged + " << kTiles << " weight + " << kTiles
+              << " gamma + 1 scaler + 2 output) against " << budgetTiles
+              << " available tiles per core on '" << spec->name
+              << "', so the fused program cannot be emitted. Emit the "
+                 "matmul-only path from examples/matmul.mlir, or keep the fused "
+                 "plan as a planning result: run tensixflow-opt through "
+                 "--tensixflow-plan-noc-sharding, pipe the module into "
+                 "tensixflow-translate --tensixflow-to-json, then render it with "
+                 "tensixflow-report.";
+          signalPassFailure();
+          return;
+        }
+
+        // The compute kernel accumulates one output tile per output column block
+        // in the destination register file. FP32 destination accumulation leaves
+        // eight destination tiles.
+        if (shape->nTiles() > kFusedOutputColumnTileLimit) {
+          kernel.emitError()
+              << "the fused plan '" << fusionKind(schedule) << "' has "
+              << shape->nTiles() << " output column tiles, but the emitted fused "
+                 "compute kernel holds one output tile per column block in the "
+                 "destination registers and FP32 accumulation leaves "
+              << kFusedOutputColumnTileLimit
+              << ". Emit the matmul-only path from examples/matmul.mlir for this "
+                 "shape, or use the plan and report path.";
+          signalPassFailure();
+          return;
+        }
+
+        effectiveSchedule = withFusedCbAllocation(&getContext(), schedule, fused);
       }
-
-      const device::DeviceSpec *spec = deviceSpec;
-      const int64_t budgetTiles =
-          spec->cbBudget(device::kDefaultL1ReserveBytes) / spec->tileBytes;
-      const int64_t kTiles = shape->kTiles();
-      const int64_t stageTiles = emission.getFusedStageTiles();
-
-      // The plan's emission block is the first gate: the planning pass records
-      // whether the fused staging fits the per-core budget, including the
-      // gamma tiles and the scaler. The emitter reports the recorded staging
-      // and the budget it was compared against rather than recomputing the
-      // estimate, so the diagnostic cannot disagree with the plan.
-      if (!emission.getFusedFeasible()) {
-        kernel.emitError()
-            << "the fused plan '" << fusionKind(schedule)
-            << "' is not emittable: it stages " << stageTiles
-            << " circular-buffer tiles of activation rows plus " << kTiles
-            << " weight tiles and " << kTiles << " gamma tiles, against "
-            << budgetTiles << " available tiles per core on '" << spec->name
-            << "', and the emitted-path estimate marks the fused variant "
-               "infeasible. Emit the matmul-only path from examples/matmul.mlir, "
-               "or keep the fused plan as a planning result: run tensixflow-opt "
-               "through --tensixflow-plan-noc-sharding, pipe the module into "
-               "tensixflow-translate --tensixflow-to-json, then render it with "
-               "tensixflow-report.";
-        signalPassFailure();
-        return;
-      }
-
-      scheduler::CBAllocation fused =
-          scheduler::allocateFusedCBs(*spec, kTiles, stageTiles);
-      const int64_t neededTiles = scheduler::fusedCbTileCount(kTiles, stageTiles);
-      if (!fused.feasible) {
-        kernel.emitError()
-            << "the fused plan '" << fusionKind(schedule) << "' needs "
-            << neededTiles << " circular-buffer tiles (2 * " << stageTiles
-            << " staged + " << kTiles << " weight + " << kTiles
-            << " gamma + 1 scaler + 2 output) against " << budgetTiles
-            << " available tiles per core on '" << spec->name
-            << "', so the fused program cannot be emitted. Emit the "
-               "matmul-only path from examples/matmul.mlir, or keep the fused "
-               "plan as a planning result: run tensixflow-opt through "
-               "--tensixflow-plan-noc-sharding, pipe the module into "
-               "tensixflow-translate --tensixflow-to-json, then render it with "
-               "tensixflow-report.";
-        signalPassFailure();
-        return;
-      }
-
-      // The compute kernel accumulates one output tile per output column block
-      // in the destination register file. FP32 destination accumulation leaves
-      // eight destination tiles.
-      if (shape->nTiles() > kFusedOutputColumnTileLimit) {
-        kernel.emitError()
-            << "the fused plan '" << fusionKind(schedule) << "' has "
-            << shape->nTiles() << " output column tiles, but the emitted fused "
-               "compute kernel holds one output tile per column block in the "
-               "destination registers and FP32 accumulation leaves "
-            << kFusedOutputColumnTileLimit
-            << ". Emit the matmul-only path from examples/matmul.mlir for this "
-               "shape, or use the plan and report path.";
-        signalPassFailure();
-        return;
-      }
-
-      effectiveSchedule = withFusedCbAllocation(&getContext(), schedule, fused);
     }
 
     // File mode: assemble the complete standalone project tree.

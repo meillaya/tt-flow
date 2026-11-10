@@ -120,6 +120,7 @@ public:
     std::string graphId = "graph";
     TensixflowFuncOp funcOp;
     Value activation, weight;
+    Value secondWeight;
     FloatAttr epsilonAttr;
     bool found = false;
 
@@ -143,6 +144,7 @@ public:
           return;
         activation = op.getInput();
         weight = op.getW1();
+        secondWeight = op.getW2();
         epsilonAttr = op.getEpsilonAttr();
         found = true;
       });
@@ -188,6 +190,22 @@ public:
     if (auto wTy = dyn_cast<RankedTensorType>(weight.getType());
         wTy && wTy.getRank() >= 1 && wTy.hasStaticShape())
       n = wTy.getShape().back();
+
+    // The fused MLP chain has two matmuls: the weight in `weight` is w1 [K, H],
+    // so `n` above is the hidden width H. The host and the emitter need both H
+    // and the final output width N from w2 [H, N]. Record the full chain shape
+    // and keep `matmul_shape` as the final matmul (M x N x K = H) that sizes the
+    // output buffers and the reference matmul.
+    const bool fusedMlp = schedule.getFusion().getValue() == "fused_mlp";
+    int64_t hidden = n;
+    int64_t finalN = n;
+    if (fusedMlp && secondWeight) {
+      if (auto w2Ty = dyn_cast<RankedTensorType>(secondWeight.getType());
+          w2Ty && w2Ty.getRank() >= 1 && w2Ty.hasStaticShape()) {
+        finalN = w2Ty.getShape().back();
+      }
+      n = finalN;
+    }
 
     // Trip counts (documented first-order tile decomposition): the reader and
     // compute programs stream the reduction dimension (K tiles -- the matmul inner
@@ -244,6 +262,13 @@ public:
     // record M, N, K on the kernel.
     kernel->setAttr(kMatmulShapeAttrName,
                     b.getDenseI64ArrayAttr({m, n, k}));
+    // The fused MLP emitter sizes w1, w2, and the intermediate from the hidden
+    // width and the final output width, which the matmul shape alone cannot
+    // recover. The order is (M, K, H, N) in elements.
+    if (fusedMlp) {
+      kernel->setAttr(kFusedMlpShapeAttrName,
+                      b.getDenseI64ArrayAttr({m, k, hidden, finalN}));
+    }
 
     // The graph function has been lowered into the kernel; erase it so the kernel
     // is the sole symbol named graphId (the module is a SymbolTable and would

@@ -21,6 +21,9 @@
 //   8. ReportSeam                - toCBSpecs yields the plan::CBSpec vector.
 //   9. Fused*                    - the fused six-buffer layout: deterministic
 //                                  order, budget invariant, guarded request.
+//  10. FusedMlp*                - the fused MLP twelve-buffer layout:
+//                                  deterministic order, budget invariant,
+//                                  guarded request.
 //
 //===----------------------------------------------------------------------===//
 
@@ -210,6 +213,50 @@ TEST(CBAllocatorTest, FusedLayoutDegenerateGuarded) {
   EXPECT_FALSE(allocateFusedCBs(n150(), 0, 8).feasible);
   EXPECT_FALSE(allocateFusedCBs(n150(), 4, 0).feasible);
   EXPECT_EQ(fusedCbTileCount(0, 8), 0);
+}
+
+TEST(CBAllocatorTest, FusedMlpLayoutInDeterministicOrder) {
+  // The fused MLP plan allocates twelve buffers in the documented order:
+  // activation row c_0, squares c_1, inverse RMS c_2, normalized row c_3, first
+  // weight block c_4, gamma c_5, scaler c_6, bias c_7, second weight block c_8,
+  // residual row c_9, intermediate rows c_10, output c_16. The 4 x 4 tile
+  // geometry with one row and one column per core is 49 tiles.
+  CBAllocation allocation = allocateFusedMlpCBs(n150(), /*kTiles=*/4,
+                                                /*hTiles=*/4,
+                                                /*rowsPerCore=*/1,
+                                                /*colsPerCore=*/1);
+  EXPECT_TRUE(allocation.feasible);
+  ASSERT_EQ(allocation.cbs.size(), kFusedMlpCbCount);
+  const int64_t expectedIndices[kFusedMlpCbCount] = {0, 1, 2, 3, 4,
+                                                     5, 6, 7, 8, 9,
+                                                     10, 16};
+  const int64_t expectedDepths[kFusedMlpCbCount] = {4, 4, 1, 4, 16, 4,
+                                                    1, 4, 4, 1, 4,  2};
+  for (std::size_t i = 0; i < kFusedMlpCbCount; ++i) {
+    EXPECT_EQ(allocation.cbs[i].index, expectedIndices[i]);
+    EXPECT_EQ(allocation.cbs[i].depth, expectedDepths[i]);
+    EXPECT_EQ(allocation.cbs[i].tileBytes, 2048);
+  }
+  EXPECT_EQ(allocation.totalBytes, 49 * 2048);
+  EXPECT_EQ(fusedMlpCbTileCount(4, 4, 1, 1), 49);
+}
+
+TEST(CBAllocatorTest, FusedMlpLayoutFitsBudgetInvariant) {
+  // The emittable small MLP fits the n150 budget. The large running example
+  // stages a 128 x 384 first weight block, which cannot fit: 59284 tiles.
+  EXPECT_TRUE(allocateFusedMlpCBs(n150(), 4, 4, 1, 1).feasible);
+  CBAllocation oversized = allocateFusedMlpCBs(n150(), 128, 384, 8, 16);
+  EXPECT_FALSE(oversized.feasible);
+  EXPECT_EQ(fusedMlpCbTileCount(128, 384, 8, 16), 59284);
+}
+
+TEST(CBAllocatorTest, FusedMlpLayoutDegenerateGuarded) {
+  // Non-positive tile or block counts are guarded: infeasible, no buffers.
+  EXPECT_FALSE(allocateFusedMlpCBs(n150(), 0, 4, 1, 1).feasible);
+  EXPECT_FALSE(allocateFusedMlpCBs(n150(), 4, 0, 1, 1).feasible);
+  EXPECT_FALSE(allocateFusedMlpCBs(n150(), 4, 4, 0, 1).feasible);
+  EXPECT_FALSE(allocateFusedMlpCBs(n150(), 4, 4, 1, 0).feasible);
+  EXPECT_EQ(fusedMlpCbTileCount(0, 4, 1, 1), 0);
 }
 
 TEST(CBAllocatorTest, ReportSeam) {

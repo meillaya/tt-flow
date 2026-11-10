@@ -116,13 +116,91 @@ bool matmulTilesFromPlan(const Plan &perfPlan, const device::DeviceSpec &spec,
   return true;
 }
 
+/// Derive the fused MLP chain geometry from a plan: the activation is
+/// tensors[0] ([..., M, K]), the first weight is the rank>=2 tensor with the
+/// most elements ([K, H]), and the second weight is the rank-2 tensor whose
+/// first dimension equals the hidden width ([H, N]). Returns false when the
+/// plan does not carry those shapes, which makes the emission block
+/// unverifiable.
+bool mlpTilesFromPlan(const Plan &plan, const Plan &perfPlan,
+                      const device::DeviceSpec &spec,
+                      scheduler::EmissionInputs &inputs, std::string &error) {
+  if (perfPlan.tensors.size() < 2 || plan.tensors.size() < 2) {
+    error = "the plan does not carry the activation and weight shapes needed "
+            "to validate the fused MLP emission block";
+    return false;
+  }
+  const TensorDesc &activation = perfPlan.tensors[0];
+  const TensorDesc &weight = perfPlan.tensors[1];
+  if (activation.shape.size() < 2 || weight.shape.size() < 2) {
+    error = "the fused MLP plan's activation and weight shapes are not rank 2 "
+            "or higher";
+    return false;
+  }
+  int64_t m = 1;
+  for (size_t i = 0; i + 1 < activation.shape.size(); ++i) {
+    m *= activation.shape[i];
+  }
+  const int64_t k = activation.shape.back();
+  const int64_t h = weight.shape.back();
+
+  // Find the index of the first weight in the plan's full tensor list, matching
+  // selectPerfInput's choice: the rank>=2 tensor after the activation with the
+  // most elements.
+  size_t weightIndex = 0;
+  int64_t bestElements = -1;
+  for (size_t i = 1; i < plan.tensors.size(); ++i) {
+    const TensorDesc &tensor = plan.tensors[i];
+    if (tensor.shape.size() < 2) {
+      continue;
+    }
+    int64_t elements = 1;
+    for (int64_t dim : tensor.shape) {
+      elements *= dim;
+    }
+    if (elements > bestElements) {
+      bestElements = elements;
+      weightIndex = i;
+    }
+  }
+
+  // The second weight is the other rank-2 operand whose first dimension is the
+  // hidden width.
+  int64_t n = 0;
+  for (size_t i = 1; i < plan.tensors.size(); ++i) {
+    if (i == weightIndex) {
+      continue;
+    }
+    const TensorDesc &tensor = plan.tensors[i];
+    if (tensor.shape.size() != 2 || tensor.shape[0] != h) {
+      continue;
+    }
+    n = tensor.shape[1];
+    break;
+  }
+  if (n <= 0) {
+    error = "the fused MLP plan does not carry the second weight shape "
+            "[H, N] needed to validate the emission block";
+    return false;
+  }
+  const int64_t tileHeight = spec.tileHeight;
+  const int64_t tileWidth = spec.tileWidth;
+  inputs.mTiles = (m + tileHeight - 1) / tileHeight;
+  inputs.kTiles = (k + tileWidth - 1) / tileWidth;
+  inputs.hTiles = (h + tileWidth - 1) / tileWidth;
+  inputs.nTiles = (n + tileWidth - 1) / tileWidth;
+  inputs.tileBytes = spec.tileBytes;
+  inputs.cbBudgetBytes = spec.cbBudget(device::kDefaultL1ReserveBytes);
+  return true;
+}
+
 /// Validate the emission block: the mapping must be one the emitter supports,
 /// the work split must fit the plan grid, and every byte count must match the
 /// projection from the plan's own tile geometry. The projection models the
 /// emitted blocked-reuse weight multicast. A stale or hand-edited block is an
 /// error rather than a rendered guess.
 bool validateEmission(const Plan &plan, const Plan &perfPlan,
-                      const device::DeviceSpec &spec, bool fused,
+                      const device::DeviceSpec &spec, llvm::StringRef fusion,
                       std::string &error) {
   const EmissionEstimate &emission = plan.emission;
   if (emission.mapping != scheduler::kOutputTileRangesMapping &&
@@ -150,17 +228,26 @@ bool validateEmission(const Plan &plan, const Plan &perfPlan,
   }
 
   scheduler::EmissionInputs inputs;
-  if (!matmulTilesFromPlan(perfPlan, spec, inputs)) {
+  const bool fused = fusion != "none";
+  const bool fusedMlp = fusion == "fused_mlp";
+  if (fusedMlp) {
+    if (!mlpTilesFromPlan(plan, perfPlan, spec, inputs, error)) {
+      return false;
+    }
+  } else if (!matmulTilesFromPlan(perfPlan, spec, inputs)) {
     error = "the plan does not carry the activation and weight shapes needed "
             "to validate the emission block";
     return false;
   }
   inputs.gridY = plan.shardGrid.gridY;
   inputs.gridX = plan.shardGrid.gridX;
-  // The fused emitter stages activation rows itself and keeps the contiguous
-  // range mapping, so the plan's optional fusion field decides which projection
-  // applies. A plan that omits the field is validated as the plain matmul path.
+  // The fused emitters stage their own intermediates, so the plan's optional
+  // fusion field decides which projection applies: the fused MLP chain uses the
+  // 2D block mapping and the hidden width, the fused RMSNorm + MatMul path
+  // keeps the contiguous range mapping, and a plan that omits the field is
+  // validated as the plain matmul path.
   inputs.fused = fused;
+  inputs.fusedMlp = fusedMlp;
   const scheduler::EmissionPlan expected = scheduler::estimateEmission(inputs);
   if (emission.mapping != expected.mapping) {
     error = "emission mapping '" + emission.mapping + "' is not the '" +
@@ -285,19 +372,19 @@ int main(int argc, char **argv) {
   Plan perfPlan = selectPerfInput(plan);
 
   // The emitted-path projection depends on the fusion decision: the fused
-  // emitter stages activation rows itself. The plan document carries it as the
+  // emitters stage their own intermediates. The plan document carries it as the
   // optional report field "fusion"; a plain matmul plan omits or zeroes it.
-  bool fused = false;
+  llvm::StringRef fusion = "none";
   if (const json::Object *root = parsed->getAsObject()) {
-    if (std::optional<llvm::StringRef> fusion = root->getString("fusion")) {
-      fused = *fusion != "none";
+    if (std::optional<llvm::StringRef> name = root->getString("fusion")) {
+      fusion = *name;
     }
   }
 
   // Validate the required emitted-path block against the plan's own geometry
   // before rendering it.
   std::string emissionError;
-  if (!validateEmission(plan, perfPlan, *deviceSpec, fused, emissionError)) {
+  if (!validateEmission(plan, perfPlan, *deviceSpec, fusion, emissionError)) {
     llvm::errs() << "error: " << in << " has an invalid emission block: "
                  << emissionError << "\n";
     return 1;

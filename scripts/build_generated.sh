@@ -115,13 +115,15 @@ if [ "$emit_fresh" -eq 1 ]; then
         input_mlir="$(find_input)"
     fi
     echo "== emit =="
-    echo "  $opt --tensixflow-device=n150 --tensixflow-plan-noc-sharding \\"
+    echo "  $opt --tensixflow-device=n150 --tensixflow-fuse-rmsnorm-matmul \\"
+    echo "      --tensixflow-plan-noc-sharding \\"
     echo "      --tensixflow-allocate-circular-buffers --tensixflow-lower-to-ttkernel \\"
     echo "      --tensixflow-emit-metalium=output-dir=$project_dir $input_mlir"
     rm -rf "$project_dir"
     mkdir -p "$project_dir"
     "$opt" \
         --tensixflow-device=n150 \
+        --tensixflow-fuse-rmsnorm-matmul \
         --tensixflow-plan-noc-sharding \
         --tensixflow-allocate-circular-buffers \
         --tensixflow-lower-to-ttkernel \

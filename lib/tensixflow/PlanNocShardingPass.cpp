@@ -160,6 +160,10 @@ public:
     std::string fusion = "none";
     bool fused = false;
     bool found = false;
+    // The fused MLP chain needs the hidden width (the first matmul's output) and
+    // the final output width in addition to the first matmul's M and K.
+    int64_t mlpHiddenElements = 0;
+    int64_t mlpOutputElements = 0;
 
     // An already-fused op carries its operand shapes directly.
     module.walk([&](TensixflowFusedRmsnormMatmulOp op) {
@@ -179,6 +183,14 @@ public:
         }
         activation = tensorShapeOf(op.getInput(), "activation");
         weight = tensorShapeOf(op.getW1(), "weight");
+        const scheduler::TensorShape w2Shape =
+            tensorShapeOf(op.getW2(), "second weight");
+        if (!weight.dims.empty()) {
+          mlpHiddenElements = weight.dims.back();
+        }
+        if (!w2Shape.dims.empty()) {
+          mlpOutputElements = w2Shape.dims.back();
+        }
         fusion = "fused_mlp";
         fused = true;
         found = true;
@@ -267,10 +279,17 @@ public:
     emissionInputs.tileBytes = report.device->tileBytes;
     emissionInputs.cbBudgetBytes =
         report.device->cbBudget(device::kDefaultL1ReserveBytes);
-    // The fused emitter stages activation rows itself, so a fused plan keeps
-    // the contiguous-range mapping; the blocked-reuse selector applies to the
-    // plain matmul path.
+    // The fused emitters stage their own intermediates, so a fused plan keeps
+    // the mapping its emitter realizes: the MLP emitter uses a 2D block per
+    // core, the fused RMSNorm emitter uses contiguous output-tile ranges.
     emissionInputs.fused = fused;
+    if (fusion == "fused_mlp") {
+      emissionInputs.fusedMlp = true;
+      emissionInputs.hTiles =
+          ceilDiv(mlpHiddenElements, report.device->tileWidth);
+      emissionInputs.nTiles =
+          ceilDiv(mlpOutputElements, report.device->tileWidth);
+    }
     const scheduler::EmissionPlan emission =
         scheduler::estimateEmission(emissionInputs);
     module->setAttr(

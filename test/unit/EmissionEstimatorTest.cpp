@@ -165,6 +165,43 @@ TEST(EmissionEstimatorTest, FusedPlanKeepsOutputTileRangesMapping) {
   EXPECT_TRUE(plan.fusedFeasible);
 }
 
+TEST(EmissionEstimatorTest, FusedMlpSelectsBlockedMappingAndSizesFootprint) {
+  // The small MLP: 4 x 4 output tiles, 4 K tiles, 4 hidden tiles on the 8 x 8
+  // grid, so blocks of 1 x 1 over 4 used row blocks and 4 used column blocks.
+  // Reads: activation 4 * 4 * 4 = 64 tiles (replicated across column blocks),
+  // first weight block 4 * 4 * 16 = 256 (on every used core), second weight
+  // block 4 * 4 * 4 = 64 (once per used row block), bias 4 * 16 = 64, gamma
+  // 4 * 16 = 64, residual 16. The intermediate staging is 1 * 4 = 4 tiles.
+  EmissionInputs in = inputs(/*mTiles=*/4, /*nTiles=*/4, /*kTiles=*/4);
+  in.fused = true;
+  in.fusedMlp = true;
+  in.hTiles = 4;
+  const EmissionPlan plan = estimateEmission(in);
+  EXPECT_EQ(plan.mapping, kBlockedReuseMapping);
+  EXPECT_EQ(plan.coresUsed, 16);
+  EXPECT_EQ(plan.maxTilesPerCore, 1);
+  EXPECT_EQ(plan.fusedStageTiles, 4);
+  EXPECT_TRUE(plan.fusedFeasible);
+  const int64_t readTiles = 64 + 256 + 64 + 64 + 64 + 16;
+  EXPECT_EQ(plan.dramReadBytes, readTiles * 2048);
+  EXPECT_EQ(plan.dramWriteBytes, 16 * 2048);
+}
+
+TEST(EmissionEstimatorTest, FusedMlpFootprintInfeasibleForLargeHiddenWidth) {
+  // The large MLP: 64 x 128 output tiles over the 8 x 8 grid gives 8 row block
+  // tiles and 16 column block tiles per core; the 128 x 384 first weight block
+  // is 49152 tiles on its own. The intermediate staging is 8 * 384 = 3072
+  // tiles, so the footprint is far past the 700-tile budget.
+  EmissionInputs in = inputs(/*mTiles=*/64, /*nTiles=*/128, /*kTiles=*/128);
+  in.fused = true;
+  in.fusedMlp = true;
+  in.hTiles = 384;
+  const EmissionPlan plan = estimateEmission(in);
+  EXPECT_EQ(plan.mapping, kBlockedReuseMapping);
+  EXPECT_EQ(plan.fusedStageTiles, 3072);
+  EXPECT_FALSE(plan.fusedFeasible);
+}
+
 TEST(EmissionEstimatorTest, CoresAreCappedByOutputTiles) {
   // One output tile cannot use more than one core even on a 64-core grid, and
   // the blocked assignment puts it on one used row block and one used column

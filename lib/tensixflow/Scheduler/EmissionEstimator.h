@@ -65,14 +65,23 @@ struct EmissionInputs {
   int64_t mTiles = 0;
   int64_t nTiles = 0;
   int64_t kTiles = 0;
+  /// Hidden tiles of a fused MLP: the number of 32-wide hidden columns the
+  /// first matmul produces and the second matmul contracts. Zero for a plain
+  /// matmul or a fused RMSNorm + MatMul plan.
+  int64_t hTiles = 0;
   int64_t gridX = 0;
   int64_t gridY = 0;
   int64_t tileBytes = kEmissionTileBytes;
   int64_t cbBudgetBytes = 0;
-  /// True when the plan emits the fused RMSNorm + MatMul kernel. That emitter
-  /// stages activation rows itself with contiguous output-tile ranges, so the
-  /// blocked-reuse selector applies to the plain matmul path only.
+  /// True when the plan emits a fused kernel. That emitter stages its own
+  /// intermediates, so the blocked-reuse selector applies to the plain matmul
+  /// path only.
   bool fused = false;
+  /// True when the fused plan is the full MLP chain. The MLP emitter assigns a
+  /// 2D block of output tiles per core and needs the hidden tile count to size
+  /// the weight and intermediate buffers; a fused RMSNorm + MatMul plan keeps
+  /// the contiguous-range mapping.
+  bool fusedMlp = false;
 };
 
 /// The 2D block assignment of the blocked-reuse mapping for one tile geometry:
@@ -145,6 +154,20 @@ BlockAssignment planBlockAssignment(const EmissionInputs &inputs);
 /// with cbBudgetTiles = cbBudgetBytes / tileBytes. The integer divisions are
 /// floor divisions. Degenerate inputs (no tiles, no cores, no budget) produce
 /// zeroed fields with fusedFeasible false instead of dividing by zero.
+///
+/// A fused MLP plan selects the blocked-reuse mapping and records:
+///   fused_stage_tiles = rowsPerCore * hTiles (the GELU intermediate rows the
+///       core keeps in L1 between the two matmuls)
+///   fused_feasible = the whole MLP circular-buffer footprint fits the budget.
+/// The footprint is the staged activation row (kTiles), the squared tiles
+/// (kTiles), one inverse-RMS tile, the normalized row (kTiles), the resident
+/// first weight block (kTiles * hTiles), the gamma tiles (kTiles), one reduce
+/// scaler tile, the bias tiles (hTiles), the second weight block
+/// (hTiles * colsPerCore), one residual row (colsPerCore), the intermediate
+/// rows (rowsPerCore * hTiles), and the output buffer. The projected reads
+/// count the replicated first weight block on every used core, the second
+/// weight block once per row block, the activation rows once per used column
+/// block, and the residual and output tiles once each.
 EmissionPlan estimateEmission(const EmissionInputs &inputs);
 
 } // namespace scheduler

@@ -1,6 +1,7 @@
 // RUN: split-file %s %t
 // RUN: tensixflow-opt --tensixflow-device=n150 --tensixflow-plan-noc-sharding --tensixflow-allocate-circular-buffers --tensixflow-lower-to-ttkernel --tensixflow-emit-metalium %t/small.mlir | FileCheck %t/small.mlir
 // RUN: not tensixflow-opt --tensixflow-device=n150 --tensixflow-plan-noc-sharding --tensixflow-allocate-circular-buffers --tensixflow-lower-to-ttkernel --tensixflow-emit-metalium %t/large.mlir 2>&1 | FileCheck %t/large.mlir --check-prefix=INFEASIBLE
+// RUN: not tensixflow-opt --tensixflow-device=n150 --tensixflow-plan-noc-sharding --tensixflow-allocate-circular-buffers --tensixflow-lower-to-ttkernel --tensixflow-emit-metalium %t/dest_bound.mlir 2>&1 | FileCheck %t/dest_bound.mlir --check-prefix=DEST
 
 // Structural test for the emitted fused RMSNorm + MatMul project.
 //
@@ -11,6 +12,10 @@
 // The generated compute kernel emits the normalization op sequence in front of
 // the matmul; the emitted project is built and run under ttsim by
 // scripts/test.sh, which requires the pass status.
+//
+// Destination-register graph: M=128, K=128, N=320 (Mt=4, Nt=10, Kt=4). The
+// staging fits the n150 budget (27 of 700 tiles), so the plan gate passes and
+// the emitter must reject on the eight-tile FP32 destination-register bound.
 //
 // Large graph: M=2048, K=4096, N=12288. The fused staging does not fit the
 // n150's per-core circular-buffer budget, so the emitter refuses with a
@@ -61,4 +66,13 @@ tensixflow.func @rmsnorm_matmul(%x: tensor<1x2048x4096xbf16>, %gamma: tensor<409
   %0 = tensixflow.rmsnorm %x, %gamma : tensor<1x2048x4096xbf16>, tensor<4096xbf16> -> tensor<1x2048x4096xbf16>
   %1 = tensixflow.matmul %0, %w : tensor<1x2048x4096xbf16> x tensor<4096x12288xbf16> -> tensor<1x2048x12288xbf16>
   tensixflow.return %1 : tensor<1x2048x12288xbf16>
+}
+
+//--- dest_bound.mlir
+// DEST: error: the fused plan 'fused_rmsnorm_matmul' has 10 output column tiles
+// DEST: FP32 accumulation leaves 8
+tensixflow.func @rmsnorm_matmul_dest_bound(%x: tensor<128x128xbf16>, %gamma: tensor<128xbf16>, %w: tensor<128x320xbf16>) -> tensor<128x320xbf16> {
+  %0 = tensixflow.rmsnorm %x, %gamma : tensor<128x128xbf16>, tensor<128xbf16> -> tensor<128x128xbf16>
+  %1 = tensixflow.matmul %0, %w : tensor<128x128xbf16> x tensor<128x320xbf16> -> tensor<128x320xbf16>
+  tensixflow.return %1 : tensor<128x320xbf16>
 }

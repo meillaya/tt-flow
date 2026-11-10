@@ -72,6 +72,53 @@ std::vector<plan::CBSpec> toCBSpecs(const CBAllocation &allocation);
 // Fused RMSNorm + MatMul allocation
 //===----------------------------------------------------------------------===//
 
+/// The fused MLP plan's circular buffers, in the deterministic allocation order
+/// the emitted kernels read them by: staged activation row c_0, squares c_1,
+/// inverse RMS c_2, normalized row c_3, first weight block c_4, gamma c_5,
+/// reduce scaler c_6, bias c_7, second weight block c_8, residual row c_9,
+/// intermediate rows c_10, output c_16. Every buffer is read by tile index only
+/// while its front pointer sits at the buffer base, so each push or pop cycle
+/// totals the buffer depth.
+enum class FusedMlpCbSlot : std::size_t {
+  ActivationRow = 0,
+  SquaredRow = 1,
+  InverseRms = 2,
+  NormalizedRow = 3,
+  Weight1 = 4,
+  Gamma = 5,
+  Scaler = 6,
+  Bias = 7,
+  Weight2 = 8,
+  ResidualRow = 9,
+  Intermediate = 10,
+  Output = 11,
+};
+
+inline constexpr std::size_t kFusedMlpCbCount = 12;
+inline constexpr int64_t kFusedMlpCBIndices[kFusedMlpCbCount] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16};
+inline constexpr int64_t kFusedMlpInverseRmsCbDepth = 1;
+inline constexpr int64_t kFusedMlpScalerCbDepth = 1;
+
+/// Circular-buffer tiles the fused MLP plan needs: one activation row and one
+/// squared row (kTiles each), one inverse-RMS tile, one normalized row
+/// (kTiles), the first weight block (kTiles * hTiles), the gamma tiles
+/// (kTiles), one reduce scaler tile, the bias tiles (hTiles), the core's
+/// second weight block (hTiles * colsPerCore), one residual row (colsPerCore),
+/// the intermediate rows (rowsPerCore * hTiles), and the output buffer.
+int64_t fusedMlpCbTileCount(int64_t kTiles, int64_t hTiles, int64_t rowsPerCore,
+                            int64_t colsPerCore);
+
+/// Allocate the fused MLP plan's twelve circular buffers from the device's
+/// per-core CB budget. Feasibility is true only when every index is valid and
+/// the total footprint fits the budget; a degenerate request (non-positive
+/// kTiles, hTiles, rowsPerCore, or colsPerCore) returns feasible == false with
+/// no buffers.
+CBAllocation allocateFusedMlpCBs(
+    const device::DeviceSpec &deviceSpec, int64_t kTiles, int64_t hTiles,
+    int64_t rowsPerCore, int64_t colsPerCore,
+    int64_t reserveBytes = device::kDefaultL1ReserveBytes);
+
 /// The fused plan's circular buffers, in the deterministic allocation order the
 /// compute kernel reads them by: activation stage c_0, weight c_1, gamma c_2,
 /// reduce scaler c_3, normalized activation c_4, output c_16.

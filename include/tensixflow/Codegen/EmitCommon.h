@@ -194,13 +194,85 @@ inline bool isFusedPlan(TensixflowScheduleAttr schedule) {
   return fusionKind(schedule) != "none";
 }
 
-// The one fused pattern the Metalium emitter supports.
+// The fused patterns the Metalium emitter supports.
 inline constexpr llvm::StringLiteral kFusedRmsnormMatmulKind =
     "fused_rmsnorm_matmul";
+inline constexpr llvm::StringLiteral kFusedMlpKind = "fused_mlp";
 
 inline bool isFusedRmsnormMatmul(TensixflowScheduleAttr schedule) {
   return fusionKind(schedule) == kFusedRmsnormMatmulKind;
 }
+
+inline bool isFusedMlp(TensixflowScheduleAttr schedule) {
+  return fusionKind(schedule) == kFusedMlpKind;
+}
+
+// The attribute --tensixflow-lower-to-ttkernel stamps on a fused_mlp kernel: the
+// chain's element dimensions (M, K, H, N). The matmul shape attribute alone
+// records only the final matmul, and the host and the emitter need the input
+// contraction width K and the hidden width H as well.
+inline constexpr llvm::StringLiteral kFusedMlpShapeAttrName =
+    "tensixflow.fused_mlp_shape";
+
+// The fused MLP chain's element dimensions. Tiles round each dimension up.
+struct MlpShape {
+  int64_t m = 0;
+  int64_t k = 0;
+  int64_t h = 0;
+  int64_t n = 0;
+
+  int64_t mTiles() const { return ceilTiles(m, kEmitTileHeight); }
+  int64_t kTiles() const { return ceilTiles(k, kEmitTileWidth); }
+  int64_t hTiles() const { return ceilTiles(h, kEmitTileWidth); }
+  int64_t nTiles() const { return ceilTiles(n, kEmitTileWidth); }
+  int64_t mPadded() const { return mTiles() * kEmitTileHeight; }
+  int64_t kPadded() const { return kTiles() * kEmitTileWidth; }
+  int64_t hPadded() const { return hTiles() * kEmitTileWidth; }
+  int64_t nPadded() const { return nTiles() * kEmitTileWidth; }
+
+private:
+  static int64_t ceilTiles(int64_t elements, int64_t tileSize) {
+    if (elements <= 0) {
+      return 0;
+    }
+    return (elements + tileSize - 1) / tileSize;
+  }
+};
+
+// Read the fused MLP chain shape the lowering pass recorded. Returns
+// std::nullopt when the attribute is absent or malformed; the pass reports that
+// as a diagnostic instead of emitting a project with invented dimensions.
+inline std::optional<MlpShape> readMlpShape(TensixflowSchedKernelOp kernel) {
+  auto attr = kernel->getAttrOfType<DenseI64ArrayAttr>(kFusedMlpShapeAttrName);
+  if (!attr) {
+    return std::nullopt;
+  }
+  llvm::ArrayRef<int64_t> values = attr.asArrayRef();
+  if (values.size() != 4) {
+    return std::nullopt;
+  }
+  if (values[0] <= 0 || values[1] <= 0 || values[2] <= 0 || values[3] <= 0) {
+    return std::nullopt;
+  }
+  return MlpShape{values[0], values[1], values[2], values[3]};
+}
+
+// The fused MLP plan's circular-buffer positions in the schedule allocation. The
+// allocation is deterministic (see CBAllocator.h): the kernel-index order the
+// compute kernel reads them by.
+inline constexpr std::size_t kMlpActivationRowSlot = 0;
+inline constexpr std::size_t kMlpSquaredRowSlot = 1;
+inline constexpr std::size_t kMlpInverseRmsSlot = 2;
+inline constexpr std::size_t kMlpNormalizedRowSlot = 3;
+inline constexpr std::size_t kMlpWeight1Slot = 4;
+inline constexpr std::size_t kMlpGammaSlot = 5;
+inline constexpr std::size_t kMlpScalerSlot = 6;
+inline constexpr std::size_t kMlpBiasSlot = 7;
+inline constexpr std::size_t kMlpWeight2Slot = 8;
+inline constexpr std::size_t kMlpResidualRowSlot = 9;
+inline constexpr std::size_t kMlpIntermediateSlot = 10;
+inline constexpr std::size_t kMlpOutputSlot = 11;
+inline constexpr std::size_t kMlpCbSlotCount = 12;
 
 // The fused plan's circular-buffer positions in the schedule allocation. The
 // allocation is deterministic (see CBAllocator.h): index order, not role order.

@@ -136,3 +136,46 @@ def test_report_rejects_a_plan_without_an_emission_block(plan):
 
     assert result.returncode != 0
     assert not (work / "stripped.html").exists()
+
+
+_MLP_EXAMPLE = _REPO_ROOT / "examples" / "mlp_block_small.mlir"
+
+
+def test_report_accepts_a_fused_mlp_plan(tmp_path):
+    # A fused MLP plan records the blocked-reuse mapping and the hidden width is
+    # only recoverable from the plan's tensor list, so the report has to
+    # reproject the MLP footprint from those shapes to accept the block.
+    opt_bin, translate_bin, report_bin = _require_bins()
+    if not _MLP_EXAMPLE.is_file():
+        pytest.skip("the small MLP example is absent")
+    planned = subprocess.run(
+        [
+            str(opt_bin),
+            "--tensixflow-device=n150",
+            "--tensixflow-infer-tile-layout",
+            "--tensixflow-fuse-rmsnorm-matmul",
+            "--tensixflow-plan-noc-sharding",
+            "--tensixflow-allocate-circular-buffers",
+            str(_MLP_EXAMPLE),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    translated = subprocess.run(
+        [str(translate_bin), "--tensixflow-to-json"],
+        input=planned.stdout,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    document = json.loads(translated.stdout)
+    assert document["fusion"] == "fused_mlp"
+    assert document["emission"]["mapping"] == "blocked-reuse"
+    plan_path = _write_plan(tmp_path / "mlp_plan.json", document)
+
+    result = _run_report(report_bin, plan_path, tmp_path / "mlp_plan.html")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "mlp_plan.html").is_file()
+    assert "blocked-reuse" in (tmp_path / "mlp_plan.html").read_text()

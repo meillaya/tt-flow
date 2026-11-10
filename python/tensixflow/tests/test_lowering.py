@@ -98,6 +98,45 @@ def test_plan_json_has_emission_block(lowered):
     assert emission["fused_feasible"] is True
 
 
+def test_fused_mlp_plan_records_blocked_emission():
+    # The full MLP chain (examples/mlp_block_small.mlir, M=K=H=N=128) fuses to
+    # fused_mlp. Its emitter assigns a 2D block of output tiles per core, so the
+    # plan records the blocked-reuse mapping, 4 x 4 used blocks (16 cores), and
+    # the GELU intermediate staging of one row block times four hidden tiles.
+    import json
+    import subprocess
+    from pathlib import Path
+
+    from tensixflow.lowering import PIPELINE_FLAGS, find_opt_bin, find_translate_bin
+
+    opt_bin = find_opt_bin()
+    translate_bin = find_translate_bin()
+    example = Path(__file__).resolve().parents[3] / "examples" / "mlp_block_small.mlir"
+    if not opt_bin.is_file() or not translate_bin.is_file():
+        pytest.skip("built tools are absent; run scripts/build.sh")
+    planned = subprocess.run(
+        [str(opt_bin), "--tensixflow-device=n150", *PIPELINE_FLAGS, str(example)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    translated = subprocess.run(
+        [str(translate_bin), "--tensixflow-to-json"],
+        input=planned.stdout,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    plan = json.loads(translated.stdout)
+    assert plan["fusion"] == "fused_mlp"
+    emission = plan["emission"]
+    assert emission["mapping"] == "blocked-reuse"
+    assert emission["cores_used"] == 16
+    assert emission["max_tiles_per_core"] == 1
+    assert emission["fused_stage_tiles"] == 4
+    assert emission["fused_feasible"] is True
+
+
 def test_plan_json_has_fusion_grid_and_cbs(lowered):
     # The schedule attr (module-level, persists through the pipeline) drives the rest
     # of the plan: the fusion decision, the 8x8 shard grid, and the 3 circular buffers.

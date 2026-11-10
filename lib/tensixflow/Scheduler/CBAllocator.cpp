@@ -65,6 +65,68 @@ std::vector<plan::CBSpec> toCBSpecs(const CBAllocation &allocation) {
   return allocation.cbs;
 }
 
+int64_t fusedMlpCbTileCount(int64_t kTiles, int64_t hTiles,
+                            int64_t rowsPerCore, int64_t colsPerCore) {
+  if (kTiles <= 0 || hTiles <= 0 || rowsPerCore <= 0 || colsPerCore <= 0) {
+    return 0;
+  }
+  const int64_t activationRowTiles = kTiles;
+  const int64_t squaredRowTiles = kTiles;
+  const int64_t inverseRmsTiles = kFusedMlpInverseRmsCbDepth;
+  const int64_t normalizedRowTiles = kTiles;
+  const int64_t weight1Tiles = kTiles * hTiles;
+  const int64_t gammaTiles = kTiles;
+  const int64_t scalerTiles = kFusedMlpScalerCbDepth;
+  const int64_t biasTiles = hTiles;
+  const int64_t weight2Tiles = hTiles * colsPerCore;
+  const int64_t residualRowTiles = colsPerCore;
+  const int64_t intermediateTiles = rowsPerCore * hTiles;
+  return activationRowTiles + squaredRowTiles + inverseRmsTiles +
+         normalizedRowTiles + weight1Tiles + gammaTiles + scalerTiles +
+         biasTiles + weight2Tiles + residualRowTiles + intermediateTiles +
+         kFusedOutputCbDepth;
+}
+
+CBAllocation allocateFusedMlpCBs(const device::DeviceSpec &deviceSpec,
+                                 int64_t kTiles, int64_t hTiles,
+                                 int64_t rowsPerCore, int64_t colsPerCore,
+                                 int64_t reserveBytes) {
+  CBAllocation allocation;
+  if (kTiles <= 0 || hTiles <= 0 || rowsPerCore <= 0 || colsPerCore <= 0) {
+    return allocation;
+  }
+
+  const int64_t depths[kFusedMlpCbCount] = {
+      kTiles,
+      kTiles,
+      kFusedMlpInverseRmsCbDepth,
+      kTiles,
+      kTiles * hTiles,
+      kTiles,
+      kFusedMlpScalerCbDepth,
+      hTiles,
+      hTiles * colsPerCore,
+      colsPerCore,
+      rowsPerCore * hTiles,
+      kFusedOutputCbDepth};
+  const int64_t budget = deviceSpec.cbBudget(reserveBytes);
+  for (std::size_t i = 0; i < kFusedMlpCbCount; ++i) {
+    const int64_t index = kFusedMlpCBIndices[i];
+    if (!isValidCBIndex(index)) {
+      return CBAllocation{};
+    }
+    allocation.cbs.push_back(
+        plan::CBSpec{index, depths[i], deviceSpec.tileBytes});
+    allocation.totalBytes += depths[i] * deviceSpec.tileBytes;
+  }
+
+  // The reported depth is the intermediate staging depth, the buffer that
+  // motivates the feasibility check.
+  allocation.depth = rowsPerCore * hTiles;
+  allocation.feasible = allocation.totalBytes <= budget;
+  return allocation;
+}
+
 int64_t fusedCbTileCount(int64_t kTiles, int64_t stageTiles) {
   if (kTiles <= 0 || stageTiles <= 0) {
     return 0;
