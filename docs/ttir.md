@@ -4,6 +4,8 @@ TensixFlow moves TTIR text in both directions. `tensixflow-opt
 --tensixflow-emit-ttir` prints a TTIR module for a tt-mlir frontend, and
 `tensixflow-opt --tensixflow-import-ttir` rebuilds a documented subset of
 bare-tensor TTIR as tensixflow IR so the planning pipeline can run on it.
+`tools/normalize_ttir.py` bridges the two: it parses layout-encoded TTIR with
+the pinned tt-mlir bindings and prints bare-tensor TTIR the importer accepts.
 
 Both directions use the tt-mlir release pinned in
 [deps/tt-mlir.lock](../deps/tt-mlir.lock). Emitted text is parsed by the
@@ -125,7 +127,27 @@ would hide a mapping gap behind a parse pass.
 
 `test/Tensixflow/emit_ttir_unsupported.mlir` is not a parser-gate input. It
 covers the marker path for the fused MLP tail, whose emitted function has no
-return terminator. Its lit test checks the marker text only.
+return terminator. Its lit test checks the marker text only. That text is also
+not a normalizer input, because the missing terminator is a parse error.
+
+## Running the normalize round trip
+
+The normalize test needs the wheel and the built binaries, then runs the emitted
+loop end to end:
+
+```sh
+devenv shell -- python3 -m pytest python/tensixflow/tests/test_ttir_normalize.py -q
+```
+
+The test emits layout-encoded TTIR from `examples/rmsnorm_matmul.mlir`, pipes it
+through the normalizer, imports and plans the bare result, and asserts that the
+plan JSON reports `fusion = fused_rmsnorm_matmul` with the intermediate in L1.
+It repeats the round trip on the checked-in layout sample with explicit `--site`
+and `--python` overrides, checks that the raw sample is rejected by the importer,
+checks that a malformed input fails with the pinned parse diagnostic and no
+Python traceback, and checks that normalizing already-bare TTIR is idempotent.
+The skip conditions are the same as the parser gate: the pinned wheel or
+`python3.11` is absent. A missing built binary is a failure, not a skip.
 
 ## Importing upstream TTIR
 
@@ -204,13 +226,88 @@ Upstream tt-mlir attaches placements as `#ttcore.metal_layout` tensor encodings
 and device metadata as `#ttcore.*` module attributes. This project does not link
 the ttcore or ttnn dialects, so it cannot interpret those attributes, and
 guessing at a layout would change the program. The importer therefore rejects
-them with a diagnostic that names the attribute instead of stripping it from the
-text. A strip-layout helper is out of scope: the supported way to hand TTIR to
-TensixFlow is to request bare-tensor TTIR from the producer.
+them with a diagnostic that names the attribute instead of silently dropping it
+from the text. The supported way to hand layout-encoded TTIR to TensixFlow is to
+normalize it first.
 
-One consequence is that the two passes do not round-trip each other.
-`--tensixflow-emit-ttir` writes `#ttcore.metal_layout` encodings, and
-`--tensixflow-import-ttir` rejects them.
+## Normalizing layout-encoded TTIR
+
+`tools/normalize_ttir.py` removes the plumbing the importer rejects and writes
+canonical TTIR. Run it through `scripts/normalize_ttir.sh` inside the devenv
+shell; the wrapper puts the extracted pinned wheel on `PYTHONPATH`, resolves the
+shared libraries the manylinux wheel needs, and runs `python3.11`:
+
+```sh
+# Emitted TTIR through stdin to stdout, then straight into the importer
+tensixflow-opt --tensixflow-emit-ttir examples/rmsnorm_matmul.mlir \
+  | bash scripts/normalize_ttir.sh \
+  | tensixflow-opt --allow-unregistered-dialect --tensixflow-import-ttir
+
+# A file in, a file out
+bash scripts/normalize_ttir.sh layout.mlir -o bare.mlir
+```
+
+The wrapper reads the wheel from `.deps/ttmlir/site` and runs `python3.11`. Two
+options override that: `--site DIR` names another extraction and `--python BIN`
+names another CPython 3.11 interpreter. The main tool takes an input path, or
+`-` for stdin, and `-o/--output`, or stdout.
+
+### What the tool does
+
+The tool does not search the text. It parses the input with the pinned ttmlir
+bindings, so the pinned parser and verifier accept the module before any rewrite
+happens. It then rebuilds the parsed module in place:
+
+1. Every layout-encoded ranked tensor type on a block argument or an operation
+   result becomes its bare ranked type with the same shape and element type.
+   Operands reference those values, so they follow the rebuilt type without a
+   separate rewrite.
+2. Every `func.func` signature is rebuilt as a `FunctionType` from the bare
+   argument and result types. A function result type lives in the
+   `function_type` attribute rather than on a value, so the signature needs this
+   second step.
+3. Module attributes whose name starts with `ttcore.` or `ttnn.` are deleted.
+   That removes a device attribute such as `ttcore.meshes`.
+4. The module is printed through the pinned printer. Attribute alias definitions
+   such as `#layout0` exist only in the input text: the parser resolves them,
+   and the printer inlines an attribute that still exists. An alias that only
+   the dropped encodings used does not appear in the output.
+
+Everything else is preserved: the function name and argument order, every
+operation and its operand and result order, element types and shapes, and the
+semantic attributes. A `ttir.rms_norm` keeps `normalized_shape`, `epsilon`, and
+`operandSegmentSizes`; a `ttir.matmul` keeps its transpose flags. The pinned
+printer writes a default attribute explicitly when the parsed operation carries
+it, so a normalized `ttir.matmul` can show `transpose_a = false` and
+`transpose_b = false`. The importer accepts that form.
+
+A malformed module fails with exit code 1 and the pinned parse diagnostic on
+stderr. A module that parses but cannot be rebuilt fails with a message that
+names the encoded type left on a value.
+
+### What normalization does not do
+
+The output still has to satisfy the bare-tensor subset above. Normalization
+removes the layout plumbing; it does not widen the subset:
+
+- An operation outside the four mapped TTIR ops, a second function, a nested
+  module, or a dynamic shape is still rejected at import, with the diagnostic
+  from the import pass.
+- A module attribute from another unlinked dialect, such as `mhlo.*`, is not
+  removed, so the importer still rejects the module.
+- Function argument and result attributes are not rewritten. A
+  `ttcore.shard_status` argument attribute survives normalization and the
+  importer rejects it. The normalizer handles device plumbing on tensor types
+  and module attributes only.
+- An operation attribute that embeds a layout-encoded type is not rebuilt, so
+  the importer rejects the operation that carries it.
+- Comments are not preserved. The output is the printer's canonical form.
+
+The checked-in sample
+[examples/ttir/rmsnorm_matmul_layout.mlir](../examples/ttir/rmsnorm_matmul_layout.mlir)
+carries `#ttcore.metal_layout` encodings and a `ttcore.meshes` module attribute,
+and documents the pinned fixture each form comes from. The importer rejects the
+raw sample and accepts the normalized sample.
 
 ## What remains unverified
 
@@ -231,7 +328,13 @@ One consequence is that the two passes do not round-trip each other.
   numeric or performance result.
 - The importer accepts a documented subset, not arbitrary upstream TTIR. A
   real tt-mlir pipeline emits more operations, layout encodings, and module
-  attributes than the subset covers, and those inputs are rejected by design.
+  attributes than the subset covers. The normalizer removes the encodings and
+  the ttcore and ttnn module attributes, and the importer still rejects the
+  remaining constructs by design.
+- The normalize round trip runs on TensixFlow's own emitted TTIR and on the
+  checked-in sample. No real tt-mlir pipeline output is normalized and
+  imported, so the tool is not proven against the full set of attributes a
+  frontend writes.
 - No upstream tool run validates the import. The examples are written in the
   shape of the pinned fixtures, but the release has no ttmlir-opt executable
   that could produce a real module for the importer.
@@ -241,6 +344,7 @@ One consequence is that the two passes do not round-trip each other.
 Edit `deps/tt-mlir.lock`: the tag, the tag object, the commit, the wheel name,
 the wheel digest, and the file digests. Re-run
 `scripts/fetch_ttmlir_fixtures.sh`, then update this page, the two
-`test/Tensixflow/emit_ttir*.mlir` fixtures, the import fixtures and examples,
-and the comments that quote the pinned forms. Run the parser gate and the lit
-suite before reporting the result.
+`test/Tensixflow/emit_ttir*.mlir` fixtures, the import fixtures, the sample
+`examples/ttir/rmsnorm_matmul_layout.mlir`, and the comments that quote the
+pinned forms. Run the parser gate, the normalize round trip, and the lit suite
+before reporting the result.
