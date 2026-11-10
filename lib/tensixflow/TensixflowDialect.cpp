@@ -241,7 +241,8 @@ void TensixflowScheduleAttr::print(AsmPrinter &printer) const {
 //
 // The `#tensixflow.emission` mnemonic is consumed/emitted by the dialect
 // dispatch (useDefaultAttributePrinterParser); parse/print below handle the
-// `< ... >` body. Example:
+// `< ... >` body. The mapping field carries one of the two emitted matmul
+// mappings. Example:
 //
 //   #tensixflow.emission<mapping "output-tile-ranges", cores_used 64,
 //     max_tiles_per_core 4, dram_read 16777216, dram_write 524288,

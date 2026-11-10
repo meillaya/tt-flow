@@ -31,11 +31,13 @@ namespace tensixflow {
 
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
+struct MatmulEmission;
 
 /// Emit the complete compute.cpp translation unit for the given schedule-IR
-/// kernel and plan. The caller has validated the inputs first.
+/// kernel and plan. The caller has validated the inputs first. `mapping` is the
+/// selected output-tile mapping and, for blocked reuse, the 2D block geometry.
 void emitCompute(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
-                 llvm::raw_ostream &os);
+                 const MatmulEmission &mapping, llvm::raw_ostream &os);
 
 } // namespace tensixflow
 } // namespace mlir

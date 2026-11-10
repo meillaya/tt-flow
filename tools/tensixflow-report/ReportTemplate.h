@@ -129,7 +129,10 @@ constexpr const char kJs[] = R"tfjs(
   body('noc-routes').innerHTML = h;
 
   var em = plan.emission;
-  h = '<p class="cap">the emitted program assigns output tiles to cores in contiguous row-major ranges (' + esc(em.mapping) + ')</p>';
+  var mappingCap = em.mapping === 'blocked-reuse'
+    ? 'the emitted program assigns each core a 2D block of output tiles, stages the block\'s activation rows and weight columns in L1 once, multicasts the weight column block down the used row blocks, and accumulates every output tile from those resident buffers ('
+    : 'the emitted program assigns output tiles to cores in contiguous row-major ranges (';
+  h = '<p class="cap">' + mappingCap + esc(em.mapping) + ')</p>';
   h += '<table><thead><tr><th>projected emitted-path item</th><th class="num">value</th></tr></thead><tbody>';
   h += '<tr><td>cores used</td><td class="num">' + fmt(em.cores_used) + '</td></tr>';
   h += '<tr><td>max output tiles per core</td><td class="num">' + fmt(em.max_tiles_per_core) + '</td></tr>';
@@ -138,7 +141,9 @@ constexpr const char kJs[] = R"tfjs(
   h += '<tr><td>fused stage tiles</td><td class="num">' + fmt(em.fused_stage_tiles) + '</td></tr>';
   h += '<tr><td>fused variant feasible</td><td class="num">' + (em.fused_feasible ? 'yes' : 'no') + '</td></tr>';
   h += '</tbody></table>';
-  h += '<p class="flow">projected emitted-path reads are unicast and replicated per output tile: each core reads the A and B tiles of every output tile it owns, a tile in K is re-read per output row, and no reuse across output tiles is modeled. The read figure is an upper bound, not a measured count.</p>';
+  h += em.mapping === 'blocked-reuse'
+    ? '<p class="flow">projected emitted-path reads come from the 2D block assignment: the activation row block is read once per used column block, and the weight column block is read once and multicast down the used row blocks. The activation replication across columns remains, so the read figure is an upper bound, not a measured count.</p>'
+    : '<p class="flow">projected emitted-path reads are unicast and replicated per output tile: each core reads the A and B tiles of every output tile it owns, a tile in K is re-read per output row, and no reuse across output tiles is modeled. The read figure is an upper bound, not a measured count.</p>';
   body('emitted-path').innerHTML = h;
 
   var cbs = plan.cb_specs, total = 0;

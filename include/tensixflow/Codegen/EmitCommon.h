@@ -39,16 +39,50 @@ inline constexpr int64_t kEmitTileHeight = 32;
 inline constexpr int64_t kEmitTileWidth = 32;
 inline constexpr int64_t kEmitTileBytes = 2048;
 
+// Output circular-buffer depth of the emitted matmul: the compute kernel packs
+// one result tile at a time and the writer drains it, so two tiles cover the
+// compute/writer handoff without changing the projected traffic. The same depth
+// is part of the blocked-reuse feasibility selector (EmissionEstimator.h).
+inline constexpr int64_t kEmitOutputCbTiles = 2;
+
 // The module attribute --tensixflow-plan-noc-sharding stamps with the
 // emitted-path accounting block. The Metalium emitter requires it.
 inline constexpr llvm::StringLiteral kEmissionAttrName =
     "tensixflow.emission";
 
-// The one output-tile mapping the emitter supports: each core owns a
-// contiguous range of linear output-tile ids, which is what
-// split_work_to_cores produces.
+// The output-tile mapping where each core owns a contiguous range of linear
+// output-tile ids, which is what split_work_to_cores produces.
 inline constexpr llvm::StringLiteral kOutputTileRangesMapping =
     "output-tile-ranges";
+
+// The output-tile mapping where each core owns a 2D block of output tiles and
+// stages its activation row block and weight column block in L1 once.
+inline constexpr llvm::StringLiteral kBlockedReuseMapping = "blocked-reuse";
+
+// The output-tile mapping the emitted matmul realizes.
+enum class MatmulMapping {
+  OutputTileRanges,
+  BlockedReuse,
+};
+
+// The per-core geometry of the selected mapping. The output-tile-ranges fields
+// are zero; the blocked-reuse fields size the resident circular buffers and the
+// 2D block the host assigns to each core.
+struct MatmulEmission {
+  MatmulMapping mapping = MatmulMapping::OutputTileRanges;
+  int64_t rowsPerCore = 0;
+  int64_t colsPerCore = 0;
+  int64_t usedRows = 0;
+  int64_t usedCols = 0;
+  int64_t in0DepthTiles = 0;
+  int64_t in1DepthTiles = 0;
+  // True when the blocked-reuse reader multicasts each weight column block
+  // down the used row blocks from the top row block instead of reading it on
+  // every core. The activation row block stays unicast in both cases.
+  bool multicastB = false;
+
+  bool blockedReuse() const { return mapping == MatmulMapping::BlockedReuse; }
+};
 
 // The attribute --tensixflow-lower-to-ttkernel stamps on the sched.kernel. It
 // carries the matmul shape in elements; trip counts alone cannot distinguish

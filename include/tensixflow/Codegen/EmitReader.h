@@ -31,11 +31,24 @@ namespace tensixflow {
 
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
+struct MatmulEmission;
 
 /// Emit the complete reader.cpp translation unit for the given schedule-IR
-/// kernel and plan. The caller has validated the inputs first.
+/// kernel and plan. The caller has validated the inputs first. `mapping` is the
+/// selected output-tile mapping and, for blocked reuse, the 2D block geometry.
 void emitReader(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
-                llvm::raw_ostream &os);
+                const MatmulEmission &mapping, llvm::raw_ostream &os);
+
+/// Emit kernels/reader_sender.cpp: the blocked-reuse weight sender that runs on
+/// the top row block and multicasts each weight column block down the used row
+/// blocks.
+void emitReaderMulticastSender(TensixflowScheduleAttr schedule,
+                               llvm::raw_ostream &os);
+
+/// Emit kernels/reader_receiver.cpp: the blocked-reuse weight receiver that
+/// runs on the row blocks below the top one and waits for that multicast.
+void emitReaderMulticastReceiver(TensixflowScheduleAttr schedule,
+                                 llvm::raw_ostream &os);
 
 } // namespace tensixflow
 } // namespace mlir

@@ -50,13 +50,15 @@ namespace tensixflow {
 
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
+struct MatmulEmission;
 
 /// Emit the complete host.cpp translation unit for the given schedule-IR
 /// kernel and plan. The caller has already validated the schedule attribute,
 /// the kernel, the absence of a fused plan, and the tensixflow.matmul_shape
-/// attribute (see EmitMetaliumPass.cpp).
+/// attribute (see EmitMetaliumPass.cpp). `mapping` is the selected output-tile
+/// mapping and, for blocked reuse, the 2D block geometry.
 void emitHost(TensixflowSchedKernelOp kernel, TensixflowScheduleAttr schedule,
-              llvm::raw_ostream &os);
+              const MatmulEmission &mapping, llvm::raw_ostream &os);
 
 } // namespace tensixflow
 } // namespace mlir

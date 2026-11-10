@@ -139,11 +139,13 @@ def Tensixflow_ScheduleAttr : AttrDef<Tensixflow_Dialect, "TensixflowSchedule"> 
 //     max_tiles_per_core 4, dram_read 16777216, dram_write 524288,
 //     fused_stage_tiles 32, fused_feasible true>
 //
-// `mapping` names how the emitted program assigns output tiles to cores;
-// `cores_used` and `max_tiles_per_core` record the work split; the two byte
-// counts are the projected DRAM traffic of the emitted program; the last two
-// fields record whether a fused variant of the same matmul would fit the
-// per-core circular-buffer budget. Every value is projected from static shapes.
+// `mapping` names how the emitted program assigns output tiles to cores:
+// `output-tile-ranges` for the contiguous-range mapping or `blocked-reuse` for
+// the 2D block mapping. `cores_used` and `max_tiles_per_core` record the work
+// split; the two byte counts are the projected DRAM traffic of the emitted
+// program under the recorded mapping; the last two fields record whether a
+// fused variant of the same matmul would fit the per-core circular-buffer
+// budget. Every value is projected from static shapes.
 
 def Tensixflow_EmissionAttr : AttrDef<Tensixflow_Dialect, "TensixflowEmission"> {
   let summary = "Projected emitted-path accounting: mapping, work split, traffic";
@@ -152,9 +154,13 @@ def Tensixflow_EmissionAttr : AttrDef<Tensixflow_Dialect, "TensixflowEmission"> 
     A structured attribute recording what the emitted TT-Metalium program will
     do with the plan's tile geometry: the output-tile mapping name, the number
     of cores the tiles are spread over, the largest number of output tiles one
-    core owns, the projected DRAM read and write bytes (unicast, with no tile
-    reuse across output tiles), and whether a fused variant of the same matmul
-    would fit the per-core circular-buffer budget. Attached to the module by
+    core owns, the projected DRAM read and write bytes under that mapping, and
+    whether a fused variant of the same matmul would fit the per-core
+    circular-buffer budget. The blocked-reuse mapping stages a core's activation
+    row block and weight column block once and multicasts the weight column block
+    down the used row blocks; the output-tile-ranges mapping reads the operands of
+    every output tile. The activation row block stays unicast, so it is still read
+    once per used column block. Attached to the module by
     --tensixflow-plan-noc-sharding. The emitter requires it, and the plan JSON
     carries it as the required emission object.
   }];

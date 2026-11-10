@@ -118,15 +118,19 @@ bool matmulTilesFromPlan(const Plan &perfPlan, const device::DeviceSpec &spec,
 
 /// Validate the emission block: the mapping must be one the emitter supports,
 /// the work split must fit the plan grid, and every byte count must match the
-/// projection from the plan's own tile geometry. A stale or hand-edited block
-/// is an error rather than a rendered guess.
+/// projection from the plan's own tile geometry. The projection models the
+/// emitted blocked-reuse weight multicast. A stale or hand-edited block is an
+/// error rather than a rendered guess.
 bool validateEmission(const Plan &plan, const Plan &perfPlan,
-                      const device::DeviceSpec &spec, std::string &error) {
+                      const device::DeviceSpec &spec, bool fused,
+                      std::string &error) {
   const EmissionEstimate &emission = plan.emission;
-  if (emission.mapping != scheduler::kOutputTileRangesMapping) {
+  if (emission.mapping != scheduler::kOutputTileRangesMapping &&
+      emission.mapping != scheduler::kBlockedReuseMapping) {
     error = "emission mapping '" + emission.mapping +
             "' is not one the emitter supports; expected '" +
-            scheduler::kOutputTileRangesMapping + "'";
+            scheduler::kOutputTileRangesMapping + "' or '" +
+            scheduler::kBlockedReuseMapping + "'";
     return false;
   }
   const int64_t gridCores = plan.shardGrid.gridY * plan.shardGrid.gridX;
@@ -153,7 +157,16 @@ bool validateEmission(const Plan &plan, const Plan &perfPlan,
   }
   inputs.gridY = plan.shardGrid.gridY;
   inputs.gridX = plan.shardGrid.gridX;
+  // The fused emitter stages activation rows itself and keeps the contiguous
+  // range mapping, so the plan's optional fusion field decides which projection
+  // applies. A plan that omits the field is validated as the plain matmul path.
+  inputs.fused = fused;
   const scheduler::EmissionPlan expected = scheduler::estimateEmission(inputs);
+  if (emission.mapping != expected.mapping) {
+    error = "emission mapping '" + emission.mapping + "' is not the '" +
+            expected.mapping + "' the selector projects for this geometry";
+    return false;
+  }
   if (emission.coresUsed != expected.coresUsed) {
     error = "emission.cores_used is " + std::to_string(emission.coresUsed) +
             ", projected " + std::to_string(expected.coresUsed);
@@ -271,10 +284,20 @@ int main(int argc, char **argv) {
   // once gives both the perf fill and the emission validation the same view.
   Plan perfPlan = selectPerfInput(plan);
 
+  // The emitted-path projection depends on the fusion decision: the fused
+  // emitter stages activation rows itself. The plan document carries it as the
+  // optional report field "fusion"; a plain matmul plan omits or zeroes it.
+  bool fused = false;
+  if (const json::Object *root = parsed->getAsObject()) {
+    if (std::optional<llvm::StringRef> fusion = root->getString("fusion")) {
+      fused = *fusion != "none";
+    }
+  }
+
   // Validate the required emitted-path block against the plan's own geometry
   // before rendering it.
   std::string emissionError;
-  if (!validateEmission(plan, perfPlan, *deviceSpec, emissionError)) {
+  if (!validateEmission(plan, perfPlan, *deviceSpec, fused, emissionError)) {
     llvm::errs() << "error: " << in << " has an invalid emission block: "
                  << emissionError << "\n";
     return 1;

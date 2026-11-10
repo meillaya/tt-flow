@@ -147,11 +147,11 @@
         "fused_feasible"
       ],
       "properties": {
-        "mapping": { "type": "string", "description": "Output-tile mapping name. The emitter supports \"output-tile-ranges\": each core owns a contiguous range of linear output-tile ids." },
+        "mapping": { "type": "string", "description": "Output-tile mapping name. The emitter supports \"output-tile-ranges\" (each core owns a contiguous range of linear output-tile ids) and \"blocked-reuse\" (each core owns a 2D block and stages its activation row block and weight column block in L1 once)." },
         "cores_used": { "type": "integer", "format": "int64", "description": "Cores the emitted program assigns output tiles to: min(grid cores, output tiles)." },
         "max_tiles_per_core": { "type": "integer", "format": "int64", "description": "Largest number of output tiles one core owns: ceil(output tiles / cores used)." },
-        "dram_read_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM read bytes of the emitted program: output tiles * K tiles * 2 * tile bytes. Unicast with no tile reuse across output tiles, so this is an upper bound." },
-        "dram_write_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM write bytes of the emitted program: output tiles * tile bytes." },
+        "dram_read_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM read bytes of the emitted program under the recorded mapping. For output-tile-ranges: output tiles * K tiles * 2 * tile bytes. For blocked-reuse: K tiles * used column blocks * activation row tiles plus K tiles * (used row blocks when the weight is unicast, else 1) * weight column tiles. The activation read is replicated across the used column blocks, so this is an upper bound." },
+        "dram_write_bytes": { "type": "integer", "format": "int64", "description": "Projected DRAM write bytes of the emitted program: output tiles * tile bytes, one result tile per output tile in both mappings." },
         "fused_stage_tiles": { "type": "integer", "format": "int64", "description": "Tiles a fused variant would stage per core: max rows per core * K tiles." },
         "fused_feasible": { "type": "boolean", "description": "True when a fused variant would fit the per-core circular-buffer budget." }
       }

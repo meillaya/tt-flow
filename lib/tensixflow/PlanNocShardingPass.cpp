@@ -267,6 +267,10 @@ public:
     emissionInputs.tileBytes = report.device->tileBytes;
     emissionInputs.cbBudgetBytes =
         report.device->cbBudget(device::kDefaultL1ReserveBytes);
+    // The fused emitter stages activation rows itself, so a fused plan keeps
+    // the contiguous-range mapping; the blocked-reuse selector applies to the
+    // plain matmul path.
+    emissionInputs.fused = fused;
     const scheduler::EmissionPlan emission =
         scheduler::estimateEmission(emissionInputs);
     module->setAttr(

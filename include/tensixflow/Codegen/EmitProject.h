@@ -19,8 +19,9 @@
 //
 // All six artifacts are rendered to memory before the first filesystem write, so
 // a render failure cannot leave a half-written tree. The caller validates the
-// schedule attribute, the kernel, the absence of a fused plan, and the matmul
-// shape before this function runs, so a validation failure also writes nothing.
+// schedule attribute, the kernel, the matmul shape, the emission block, and the
+// output-tile mapping before this function runs, so a validation failure also
+// writes nothing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,6 +43,7 @@ namespace tensixflow {
 class TensixflowSchedKernelOp;
 class TensixflowScheduleAttr;
 class TensixflowEmissionAttr;
+struct MatmulEmission;
 
 /// Render the generated project's CMakeLists.txt: a TT-Metalium executable that
 /// links the real package with find_package(TT-Metalium REQUIRED) and TT::Metalium
@@ -50,12 +52,14 @@ void emitProjectCMakeLists(TensixflowSchedKernelOp kernel,
                            llvm::raw_ostream &os);
 
 /// Render the generated project's README.md: the plan summary, the tile
-/// geometry, the circular-buffer allocation against the device's usable L1
-/// budget, the build/run commands, the one-core limitation, and the honesty
-/// statement for the pinned upstream release.
+/// geometry, the selected output-tile mapping, the circular-buffer allocation
+/// against the device's usable L1 budget, the build/run commands, the mapping's
+/// remaining limitations, and the honesty statement for the pinned upstream
+/// release.
 void emitProjectReadme(TensixflowSchedKernelOp kernel,
                        TensixflowScheduleAttr schedule, llvm::StringRef deviceName,
-                       TensixflowEmissionAttr emission, llvm::raw_ostream &os);
+                       TensixflowEmissionAttr emission,
+                       const MatmulEmission &mapping, llvm::raw_ostream &os);
 
 /// Write the complete project tree for `kernel` + `schedule` into `outputDir`,
 /// creating the directory (and parents) as needed. On any I/O failure returns
@@ -64,6 +68,7 @@ LogicalResult emitProject(TensixflowSchedKernelOp kernel,
                           TensixflowScheduleAttr schedule,
                           llvm::StringRef deviceName,
                           TensixflowEmissionAttr emission,
+                          const MatmulEmission &mapping,
                           llvm::StringRef outputDir, std::string &error);
 
 } // namespace tensixflow

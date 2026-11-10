@@ -24,9 +24,10 @@
 // separated by file-delimiter banners.
 //
 // Validation runs before any output in both modes: the schedule attribute, the
-// sched.kernel, the matmul shape, the emission block, the output-tile mapping,
-// and the unsupported fused path are all checked first, so a failure never
-// leaves a half-written tree and never reports a compile that did not happen.
+// sched.kernel, the matmul shape, the emission block, the recorded output-tile
+// mapping against the selector's choice for the tile geometry, and the
+// unsupported fused path are all checked first, so a failure never leaves a
+// half-written tree and never reports a compile that did not happen.
 //
 // The emitted project targets the pinned tt-metal release recorded in
 // deps/tt-metal.lock. scripts/build_generated.sh compiles and links it, and
@@ -48,6 +49,7 @@
 #include "tensixflow/TensixflowSchedule.h"
 
 #include "CBAllocator.h"
+#include "EmissionEstimator.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -160,11 +162,14 @@ public:
       signalPassFailure();
       return;
     }
-    if (emission.getMapping().getValue() != kOutputTileRangesMapping) {
+    const llvm::StringRef recordedMapping = emission.getMapping().getValue();
+    if (recordedMapping != kOutputTileRangesMapping &&
+        recordedMapping != kBlockedReuseMapping) {
       kernel.emitError()
-          << "unknown emission mapping '" << emission.getMapping().getValue()
-          << "'; the emitter supports '" << kOutputTileRangesMapping
-          << "' only, which --tensixflow-plan-noc-sharding stamps";
+          << "unknown emission mapping '" << recordedMapping
+          << "'; the emitter supports '" << kOutputTileRangesMapping << "' and '"
+          << kBlockedReuseMapping
+          << "', which --tensixflow-plan-noc-sharding stamps";
       signalPassFailure();
       return;
     }
@@ -172,6 +177,53 @@ public:
     llvm::StringRef deviceName = resolveDeviceName(module);
     std::optional<MatmulShape> shape = readMatmulShape(kernel);
     TensixflowScheduleAttr effectiveSchedule = schedule;
+
+    // Recompute the mapping selector from the module's own geometry and record
+    // it as the codegen decision. A stale or hand-edited emission block cannot
+    // force a mapping its tile geometry does not support.
+    const device::DeviceSpec *deviceSpec = device::lookup(deviceName);
+    if (deviceSpec == nullptr) {
+      deviceSpec = device::defaultDevice();
+    }
+    scheduler::EmissionInputs projectionInputs;
+    projectionInputs.mTiles = shape->mTiles();
+    projectionInputs.nTiles = shape->nTiles();
+    projectionInputs.kTiles = shape->kTiles();
+    projectionInputs.gridY = schedule.getGridY();
+    projectionInputs.gridX = schedule.getGridX();
+    projectionInputs.tileBytes = deviceSpec->tileBytes;
+    projectionInputs.cbBudgetBytes =
+        deviceSpec->cbBudget(device::kDefaultL1ReserveBytes);
+    projectionInputs.fused = isFusedPlan(schedule);
+    const scheduler::EmissionPlan projection =
+        scheduler::estimateEmission(projectionInputs);
+    if (recordedMapping != projection.mapping) {
+      kernel.emitError()
+          << "the emission mapping '" << recordedMapping << "' does not match '"
+          << projection.mapping
+          << "', the mapping the selector chooses for this shape and grid; "
+             "re-run --tensixflow-plan-noc-sharding to re-stamp the plan";
+      signalPassFailure();
+      return;
+    }
+
+    // Blocked reuse sizes its resident buffers from the 2D block geometry; the
+    // CB indices still come from the plan allocation the emitters read.
+    MatmulEmission mapping;
+    if (recordedMapping == kBlockedReuseMapping) {
+      const scheduler::BlockAssignment block =
+          scheduler::planBlockAssignment(projectionInputs);
+      mapping.mapping = MatmulMapping::BlockedReuse;
+      mapping.rowsPerCore = block.rowsPerCore;
+      mapping.colsPerCore = block.colsPerCore;
+      mapping.usedRows = block.usedRows;
+      mapping.usedCols = block.usedCols;
+      mapping.in0DepthTiles = block.in0Tiles;
+      mapping.in1DepthTiles = block.in1Tiles;
+      // With a single used row block the weight column block is read once per
+      // block already, so there is nothing for the multicast to remove.
+      mapping.multicastB = block.weightMulticast;
+    }
 
     // Fused RMSNorm + MatMul: the plan's estimate gates emission, then the
     // emitter allocates the fused circular-buffer set against the device budget
@@ -193,10 +245,7 @@ public:
         return;
       }
 
-      const device::DeviceSpec *spec = device::lookup(deviceName);
-      if (spec == nullptr) {
-        spec = device::defaultDevice();
-      }
+      const device::DeviceSpec *spec = deviceSpec;
       const int64_t budgetTiles =
           spec->cbBudget(device::kDefaultL1ReserveBytes) / spec->tileBytes;
       const int64_t kTiles = shape->kTiles();
@@ -267,7 +316,7 @@ public:
     if (!outputDir.empty()) {
       std::string error;
       if (failed(emitProject(kernel, effectiveSchedule, deviceName, emission,
-                             outputDir, error))) {
+                             mapping, outputDir, error))) {
         module.emitError("failed to write the Metalium project: ") << error;
         signalPassFailure();
         return;
@@ -279,13 +328,20 @@ public:
     // the prefix before the first banner; compute.cpp stays between host.cpp and
     // the two data-movement kernels so the FileCheck gates on reader/writer
     // output stay separate from the compute kernel.
-    emitHost(kernel, effectiveSchedule, llvm::outs());
+    emitHost(kernel, effectiveSchedule, mapping, llvm::outs());
     llvm::outs() << "\n// ===== file: compute.cpp =====\n";
-    emitCompute(kernel, effectiveSchedule, llvm::outs());
-    llvm::outs() << "\n// ===== file: reader.cpp =====\n";
-    emitReader(kernel, effectiveSchedule, llvm::outs());
+    emitCompute(kernel, effectiveSchedule, mapping, llvm::outs());
+    if (mapping.multicastB) {
+      llvm::outs() << "\n// ===== file: reader_sender.cpp =====\n";
+      emitReaderMulticastSender(effectiveSchedule, llvm::outs());
+      llvm::outs() << "\n// ===== file: reader_receiver.cpp =====\n";
+      emitReaderMulticastReceiver(effectiveSchedule, llvm::outs());
+    } else {
+      llvm::outs() << "\n// ===== file: reader.cpp =====\n";
+      emitReader(kernel, effectiveSchedule, mapping, llvm::outs());
+    }
     llvm::outs() << "\n// ===== file: writer.cpp =====\n";
-    emitWriter(kernel, effectiveSchedule, llvm::outs());
+    emitWriter(kernel, effectiveSchedule, mapping, llvm::outs());
     llvm::outs().flush();
 
     // mlir-opt prints the transformed module to stdout after all passes run, and

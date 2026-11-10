@@ -75,8 +75,11 @@ struct CBSpec {
 /// Projected emitted-path accounting: what the emitted TT-Metalium program will
 /// do with the plan's tile geometry. Every value is projected from static
 /// shapes, never measured. The mapping names how output tiles are assigned to
-/// cores; the two byte counts model unicast reads with no tile reuse across
-/// output tiles.
+/// cores: output-tile-ranges reads the operands of every output tile, and
+/// blocked-reuse stages a core's activation row block and weight column block
+/// once. The blocked-reuse path multicasts the weight column block down the used
+/// row blocks, but the activation row block stays unicast, so it is still read
+/// once per used column block.
 struct EmissionEstimate {
   std::string mapping;
   int64_t coresUsed = 0;

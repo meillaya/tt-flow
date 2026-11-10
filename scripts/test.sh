@@ -41,7 +41,7 @@ fi
 
 echo "== emitted projects against pinned tt-metal =="
 if [ -f "${repo_root}/.deps/env.sh" ]; then
-  for example in examples/matmul.mlir examples/matmul_small.mlir examples/rmsnorm_matmul_small.mlir; do
+  for example in examples/matmul.mlir examples/matmul_padded.mlir examples/matmul_small.mlir examples/rmsnorm_matmul_small.mlir; do
     name="$(basename "${example}" .mlir)"
     project_dir="${repo_root}/build-generated/${name}"
     echo "== emitted project: ${example} =="
